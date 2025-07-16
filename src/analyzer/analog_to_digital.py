@@ -120,8 +120,95 @@ def plot_interactive(edges: Dict[str, List[Tuple[float, str]]]):
     fig.update_layout(title=f'Edge Transitions')
     fig.show()
 
+
+_times_cache = {}
+_levels_cache = {}
+def _build_caches(edges):
+    for chan, evts in edges.items():
+        _times_cache[chan]  = [ts  for ts, _ in evts]
+        _levels_cache[chan] = [lvl for _, lvl in evts]
+
+def get_level_at(edges, chan, t_query):
+    """
+    Get the level at t
+    Assume initial level is always High
+    """
+    import bisect
+    # Build caches on first call
+    if chan not in _times_cache:
+        _build_caches(edges)
+    times  = _times_cache[chan]
+    levels = _levels_cache[chan]
+    idx = bisect.bisect_right(times, t_query) - 1 # [1, 2, 3], 2.1 => idx == 1 (the level of "t==2")
+    return levels[idx] if idx >= 0 else 'H'
+#     lv_query = 'H'
+#     idx = bisect.bisect_right(times, t_query) - 1
+#     for t, lv in edges[chan]:
+#         if t <= t_query:
+#             lv_query = lv
+#         else:
+#             break
+#     return lv_query
+
+def bits_to_byte(bits):
+    """
+    Convert an array of 8 bits (LSB first) into one byte.
+    IN: bits: [b0, b1, …, b7] where b0 is least significant bit.
+    OUT: one byte
+    """
+    b = sum(bit << idx for idx, bit in enumerate(bits))
+    return b
+
+def convert_to_digital(edges: Dict[str, List[Tuple[float, str]]], chan_dbg, chan_board, data_bits=8, stop_bits=1):
+    """
+    Decode all 8N1 (or 8N2 if stop_bits=2) frames on `chan`.
+    Returns a list of (start_time, [direction_bit, b0, b1,…, b7]) tuples.
+    """
+    BAUD_RATE   = 115200
+    BIT_PERIOD  = 1.0 / BAUD_RATE  # seconds per bit
+    frames    = []
+    prev_lvl  = None
+    t0 = 0
+    for t_edge, lvl in edges[chan_dbg]:
+        if not prev_lvl:
+            if lvl != 'H': # (Spec: Idle is always High)
+                continue
+            prev_lvl = lvl
+            continue
+        if t_edge < t0: # Avoid parsing inside a "packet"
+            continue
+        # Detect the falling edge (idle=H → start=low) (Spec: the start of signal is 1 low bit)
+        # Under the if: one "packet" (1 byte)
+        if prev_lvl == 'H' and lvl != 'H':
+            t0 = t_edge # t0 is where the level change
+            # extract 8 data bits
+            bits = []
+            is_from_dbg_to_board = None # None is unknown
+            for i in range(data_bits):
+                # sample in the middle of each bit:
+                t_query = t0 + BIT_PERIOD * (1 + i + 0.5)
+                lvl_chan_dbg = get_level_at(edges, chan_dbg, t_query)
+                lvl_chan_board = get_level_at(edges, chan_board, t_query)
+                bit = (1 if lvl_chan_dbg == 'H' else 0)
+                bits.append(bit)
+                if bit == 0: # since the spec says the first bit is always low, the branch always hits
+                    if lvl_chan_board == 'M': # dbg will never be 'M' (in our cases)
+                        is_from_dbg_to_board = True
+                    else:
+                        is_from_dbg_to_board = False
+                b = bits_to_byte(bits)
+            frames.append((t0, b, is_from_dbg_to_board))
+            if is_from_dbg_to_board: # (Spec: 1 + 8N2)
+                t0 += BIT_PERIOD * (1 + 8 + 2)
+            else: # (Spec: 1 + 8N1)
+                t0 += BIT_PERIOD * (1 + 8 + 1)
+        prev_lvl = lvl
+    return frames
+
 if __name__ == "__main__":
     path = '/home/kali/src/Moclockingbird/assets/debug_connect-9dd9-common-x20-analog.csv'
     edges = detect_edges(path)
-    plot(edges)
+    # plot(edges)
     # plot_interactive(edges)
+    frames = convert_to_digital(edges, 'dbg-data', 'TB-data', data_bits=8)
+    print(frames)
