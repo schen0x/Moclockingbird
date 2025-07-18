@@ -208,7 +208,7 @@ def convert_to_digital(edges: Dict[str, List[Tuple[float, str]]], chan_dbg, chan
 if __name__ == "__main__":
     path = '/home/kali/src/Moclockingbird/assets/debug_connect-9dd9-common-x20-analog.csv'
     edges = detect_edges(path)
-    # plot(edges)
-    # plot_interactive(edges)
     frames = convert_to_digital(edges, 'dbg-data', 'TB-data', data_bits=8)
     print(frames)
+    plot(edges)
+    # plot_interactive(edges)
