@@ -1,0 +1,14 @@
+.program uart_tx_8n2
+.wrap_target
+    ;pull ifempty block
+    set pins, 0       ; set the "setpins" to low, start of transmission
+    out pins, 1       ; Shift 1 bit from OSR to "outpins"
+    out pins, 1
+    out pins, 1
+    out pins, 1
+    out pins, 1
+    out pins, 1
+    out pins, 1
+    out pins, 1       ; the 8th data bit
+    set pins, 1  [1]  ; 2 stop bits (1+1)
+.wrap
