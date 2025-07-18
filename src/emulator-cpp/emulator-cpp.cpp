@@ -46,7 +46,7 @@ static void uart_tx_8n2_program_init(PIO pio, uint sm, uint offset, uint pin, fl
  * Each STATE_MACHINE has 2 FIFOs, each FIFO is 4x32 bits
  * the .pio `OUT pin 1` shift 1 bit from the *OSR* to the pin
  * (FIFO is not OSR, so either config autopull `sm_config_set_out_shift`, or `PULL` in .pio manually)
- * (if manually: pio_sm_put_block(pio, sm, (uint32_t)bytes[i] << 24)), then `PULL` (32 bits), but `OUT` the 8 times only
+ * (if manually: pio_sm_put_block(pio, sm, (uint32_t)bytes[i] << 24)), then `PULL` (32 bits), but `OUT` 8 bits only
 */
 static void uart_tx_8n2_send_bytes(PIO pio, uint sm, const uint8_t *bytes, size_t length) {
     for (size_t i = 0; i < length; ++i) {
