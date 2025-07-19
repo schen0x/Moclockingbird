@@ -1,14 +1,31 @@
+; .program uart_tx_8n2
+; ; .out 1 right auto 8          
+; ; .out 1 right 8          ; sm_config_set_out_shift(&c, shift_right=true, autopull=false, 8);
+; set pins, 1       [31] ; pull up
+; .wrap_target
+;     set pins, 1        ; for idle high
+;     pull ifempty block ; ifempty: do nothing unless SHIFT_CTRL_PULL_THRESH is reached; Block: stall if TX FIFO empty
+;     set pins, 0        ; set the "setpins" to low; == sends a LOW signaling the start of transmission
+;     out pins, 1        ; Shift 1 bit from OSR to "outpins"
+;     out pins, 1
+;     out pins, 1
+;     out pins, 1
+;     out pins, 1
+;     out pins, 1
+;     out pins, 1
+;     out pins, 1        ; the 8th data bit
+;     set pins, 1   [4]  ; 2 stop bits + 3 extra
+; .wrap
+
+; TX, send 1 bit each 8 cycles
 .program uart_tx_8n2
+.side_set 1 opt
 .wrap_target
-    ;pull ifempty block
-    set pins, 0       ; set the "setpins" to low, start of transmission
-    out pins, 1       ; Shift 1 bit from OSR to "outpins"
-    out pins, 1
-    out pins, 1
-    out pins, 1
-    out pins, 1
-    out pins, 1
-    out pins, 1
-    out pins, 1       ; the 8th data bit
-    set pins, 1  [1]  ; 2 stop bits (1+1)
+    nop                   side 1 [7] ; either as assumed stop bits (2 HIGH (16-3)), or idle HIGH
+    nop                   side 1 [6]
+    pull ifempty block               ; ifempty: do nothing unless SHIFT_CTRL_PULL_THRESH is reached; Block: stall if TX FIFO empty
+    set x, 7              side 0 [7] ; set bit counter, and 1 LOW
+bitloop:
+    out pins, 1                      ; Shift 1 bit from OSR to "outpins"
+    jmp x-- bitloop              [6] ; Each loop is 8 cycles, hold
 .wrap

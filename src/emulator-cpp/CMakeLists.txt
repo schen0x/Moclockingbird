@@ -35,18 +35,18 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(emulator-cpp emulator-cpp.cpp )
+add_executable(emulator-cpp emulator-cpp.cpp digests.cpp)
 
 pico_set_program_name(emulator-cpp "emulator-cpp")
 pico_set_program_version(emulator-cpp "0.1")
 
 # Generate PIO header
 # pico_generate_pio_header(emulator-cpp ${CMAKE_CURRENT_LIST_DIR}/blink.pio)
-pico_generate_pio_header(emulator-cpp ${CMAKE_CURRENT_LIST_DIR}/uart_tx_8n2.pio)
+pico_generate_pio_header(emulator-cpp ${CMAKE_CURRENT_LIST_DIR}/uart_tx_8n2.pio ${CMAKE_CURRENT_LIST_DIR}/uart_rx_8n1.pio)
 
 # Modify the below lines to enable/disable output over UART/USB
 pico_enable_stdio_uart(emulator-cpp 0)
-pico_enable_stdio_usb(emulator-cpp 0)
+pico_enable_stdio_usb(emulator-cpp 1)
 
 # Add the standard library to the build
 target_link_libraries(emulator-cpp

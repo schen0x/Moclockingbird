@@ -1,0 +1,54 @@
+;
+; Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
+;
+; SPDX-License-Identifier: BSD-3-Clause
+;
+
+; Slightly more fleshed-out 8n1 UART receiver which handles framing errors and
+; break conditions more gracefully.
+; IN pin 0 and JMP pin are both mapped to the GPIO used as UART RX.
+; .program uart_rx_8n1
+; .wrap_target
+; start:
+;     wait 0 pin 0        ; Stall until start bit is asserted
+;     in pins, 1          ; Shift data bit into ISR
+;     in pins, 1
+;     in pins, 1
+;     in pins, 1
+;     in pins, 1
+;     in pins, 1
+;     in pins, 1
+;     in pins, 1
+;     jmp pin stopbit_check_ok   ; Check stop bit (should be high)
+; 
+;     ;irq 4 rel           ; Either a framing error or a break. Set a sticky flag,
+;     ;wait 1 pin 0        ; and wait for line to return to idle state.
+;     jmp start           ; Don't push data if we didn't see good framing.
+; 
+; stopbit_check_ok:              ; No delay before returning to start; a little slack is
+;     ;push                ; important in case the TX clock is slightly too fast.
+;     push iffull noblock ; do nothing until ISR reach thresh; no block even when RX FIFO is full
+; .wrap
+
+
+; read 1 bit per 8 clock cycles + some overhead
+.program uart_rx_8n1
+.wrap_target
+start:
+    wait 0 pin 0                   ; Stall until start bit LOW on sm "input" pin 0
+    set x, 7                 [10]  ; delay till 1.5 bits (1.5*8-2)
+inloop:
+    in pins, 1                     ; Shift bit(s), pin(s) to ISR
+    jmp x-- inloop           [6]   ; 1 bit 8 cycle; when the initial value of x reaches 0, branch not taken, wait 6+2 and sample the stop bit
+    jmp pin stopbit_check_ok       ; ok if high
+
+    ; error handling
+    ;irq 4 rel                     ; Either a framing error or a break. Set a sticky flag,
+    wait 1 pin 0                   ; wait for line to return to idle state.
+    jmp start                      ; Don't push data if frame error
+
+stopbit_check_ok:                  ; No delay before returning to start; a little slack is important in case the TX clock is slightly too fast(?)
+    push iffull noblock            ; do nothing until ISR reach thresh; no block even when RX FIFO is full
+.wrap
+
+
