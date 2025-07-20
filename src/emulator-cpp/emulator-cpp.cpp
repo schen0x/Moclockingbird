@@ -14,149 +14,153 @@ const PIO RX_pio = pio1;
 const uint RX_sm  = 1;
 const uint TX_PIN = 0;          // GP0
 const uint RX_PIN = 1;
+const uint RST_PIN = 16;        // GP16
 const float UART_BAUD = 115200;
 
-/* ==== [WRITE] uart_tx_8n2_program START ==== */
-/**
- * IN pio: the PIO instance, pio0 or pio1
- * IN sm: the State machine index (0..3)
- * IN offset: the instruction offset of the loaded program
- * IN pin: abs pin number?
- * IN baud: baud
- */
-static void uart_tx_8n2_program_init(PIO pio, uint sm, uint offset, uint pin, float baud) {
-    pio_sm_config c = uart_tx_8n2_program_get_default_config(offset);
-    // Tell PIO to initially drive output-high on the selected pin, then map PIO
-    // onto that pin with the IO muxes.
-    pio_sm_set_pins_with_mask64(pio, sm, 1ull << pin, 1ull << pin);
-    pio_sm_set_pindirs_with_mask64(pio, sm, 1ull << pin, 1ull << pin);
-    // "pin" init -- GPIO control: PIO module takes control
-    pio_gpio_init(pio, pin);
-    // gpio_pull_up(pin);
-    // set the direction of "pin" of pio in sm to output during the init
-    // because we are the debugger and we write first
-    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true); // start from out
-    sm_config_set_set_pins(&c, pin, 1);
-    sm_config_set_out_pins(&c, pin, 1);
-    // TX FIFO length=4 (4x32bits) is used for transmit, RX FIFO length=4 is used for receive.
-    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);
-    // sm_config_set_out_shift(&c, true, true, 8); // (c, shift_right=true, autopull=true, 8 bits a time) // FIFO (4x32bits) -> OSR (32 bits)
-    sm_config_set_out_shift(&c, true, false, 8); // (c, shift_right=true, autopull=false, 8 bits a time) // FIFO (4x32bits) -> OSR (32 bits)
-    sm_config_set_sideset_pins(&c, pin);
-    float sys_hz = (float)clock_get_hz(clk_sys); // usually 125MHz
+namespace TX {
+    /* ==== [WRITE] uart_tx_8n2_program START ==== */
     /**
-     * The clock divider slows the state machine’s execution by masking the system
-     * clock on some cycles, in a repeating pattern, so that the state machine does
-     * not advance. Effectively this produces a slower clock for the state machine
-     * to run from, which can be used to generate e.g. a particular UART baud rate.
-     * 
-     * An integer clock divisor of n will cause the state machine to run 1 cycle in every n.
-     * may jitter if div too small (when baud too high) and is float
+     * IN pio: the PIO instance, pio0 or pio1
+     * IN sm: the State machine index (0..3)
+     * IN offset: the instruction offset of the loaded program
+     * IN pin: abs pin number?
+     * IN baud: baud
+     */
+    static void uart_tx_8n2_program_init(PIO pio, uint sm, uint offset, uint pin, float baud) {
+        pio_sm_config c = uart_tx_8n2_program_get_default_config(offset);
+        // Tell PIO to initially drive output-high on the selected pin, then map PIO
+        // onto that pin with the IO muxes.
+        pio_sm_set_pins_with_mask64(pio, sm, 1ull << pin, 1ull << pin);
+        pio_sm_set_pindirs_with_mask64(pio, sm, 1ull << pin, 1ull << pin);
+        // "pin" init -- GPIO control: PIO module takes control
+        pio_gpio_init(pio, pin);
+        // gpio_pull_up(pin);
+        // set the direction of "pin" of pio in sm to output during the init
+        // because we are the debugger and we write first
+        pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true); // start from out
+        sm_config_set_set_pins(&c, pin, 1);
+        sm_config_set_out_pins(&c, pin, 1);
+        // TX FIFO length=4 (4x32bits) is used for transmit, RX FIFO length=4 is used for receive.
+        sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);
+        // sm_config_set_out_shift(&c, true, true, 8); // (c, shift_right=true, autopull=true, 8 bits a time) // FIFO (4x32bits) -> OSR (32 bits)
+        sm_config_set_out_shift(&c, true, false, 8); // (c, shift_right=true, autopull=false, 8 bits a time) // FIFO (4x32bits) -> OSR (32 bits)
+        sm_config_set_sideset_pins(&c, pin);
+        float sys_hz = (float)clock_get_hz(clk_sys); // usually 125MHz
+        /**
+         * The clock divider slows the state machine’s execution by masking the system
+         * clock on some cycles, in a repeating pattern, so that the state machine does
+         * not advance. Effectively this produces a slower clock for the state machine
+         * to run from, which can be used to generate e.g. a particular UART baud rate.
+         * 
+         * An integer clock divisor of n will cause the state machine to run 1 cycle in every n.
+         * may jitter if div too small (when baud too high) and is float
+        */
+        sm_config_set_clkdiv(&c, sys_hz / (8 * baud)); // because we send 1 bit each 8 cycle
+        // State_machine, load our configuration, and jump to the start of the program
+        pio_sm_init(pio, sm, offset, &c);
+        // State_machine, start
+        // pio_sm_set_enabled(pio, sm, true);
+    }
+  
+  
+    /*
+     * Each STATE_MACHINE has 2 FIFOs, each FIFO is 4x32 bits
+     * the .pio `OUT pin 1` shift 1 bit from the *OSR* to the pin
+     * (FIFO is not OSR, so either config autopull `sm_config_set_out_shift`, or `PULL` in .pio manually)
+     * (if manually: use `sm_config_set_out_shift` but set autopull false (to achieve idle high etc.))
     */
-    sm_config_set_clkdiv(&c, sys_hz / (8 * baud)); // because we send 1 bit each 8 cycle
-    // State_machine, load our configuration, and jump to the start of the program
-    pio_sm_init(pio, sm, offset, &c);
-    // State_machine, start
-    // pio_sm_set_enabled(pio, sm, true);
-}
-
-
-/*
- * Each STATE_MACHINE has 2 FIFOs, each FIFO is 4x32 bits
- * the .pio `OUT pin 1` shift 1 bit from the *OSR* to the pin
- * (FIFO is not OSR, so either config autopull `sm_config_set_out_shift`, or `PULL` in .pio manually)
- * (if manually: use `sm_config_set_out_shift` but set autopull false (to achieve idle high etc.))
-*/
-static void uart_tx_8n2_send_bytes(PIO pio, uint sm, const uint8_t *bytes, size_t length) {
-    for (size_t i = 0; i < length; ++i) {
-        // alternative raw method: // pio->txf[sm] = (125000000 / (2 * 250)) - 3;
-        // the function stalls the processor when the TX FIFO is full
-        // TX FIFO is 4 x 32 bits (uint32_t), but it's fine since the sm is configured to autopull 8 bits a time
-        pio_sm_put_blocking(pio, sm, bytes[i]);
+    static void uart_tx_8n2_send_bytes(PIO pio, uint sm, const uint8_t *bytes, size_t length) {
+        for (size_t i = 0; i < length; ++i) {
+            // alternative raw method: // pio->txf[sm] = (125000000 / (2 * 250)) - 3;
+            // the function stalls the processor when the TX FIFO is full
+            // TX FIFO is 4 x 32 bits (uint32_t), but it's fine since the sm is configured to autopull 8 bits a time
+            pio_sm_put_blocking(pio, sm, bytes[i]);
+        }
     }
-}
-static void send_test_bytes(PIO pio, uint sm){
-    const uint8_t payload[] = { 0x1, 0x2, 0x3, 0x4, 0x55 };
-    for (int i = 0; i < 1; i++){
-        uart_tx_8n2_send_bytes(pio, sm, payload, sizeof(payload));
-        sleep_ms(30); // "cpu" sleep means no data for FIFO in 30ms, which blocks the sm thus achieve idle HIGH
+    static void send_test_bytes(PIO pio, uint sm){
+        const uint8_t payload[] = { 0x1, 0x2, 0x3, 0x4, 0x55 };
+        for (int i = 0; i < 1; i++){
+            uart_tx_8n2_send_bytes(pio, sm, payload, sizeof(payload));
+            sleep_ms(30); // "cpu" sleep means no data for FIFO in 30ms, which blocks the sm thus achieve idle HIGH
+        }
     }
+    static inline void on (){
+        pio_sm_set_enabled(TX_pio, TX_sm, true);
+    }
+    static inline void off (){
+        pio_sm_set_enabled(TX_pio, TX_sm, false);
+    }
+    /* ==== uart_tx_8n2_program END ==== */
 }
 
-static inline void tx_on (){
-    pio_sm_set_enabled(RX_pio, RX_sm, false);
-    pio_sm_set_enabled(TX_pio, TX_sm, true);
-}
-/* ==== uart_tx_8n2_program END ==== */
-
-/* ==== [READ] uart_rx_8n1_program START ==== */
-static inline void uart_rx_8n1_program_init(PIO pio, uint sm, uint offset, uint pin, uint baud) {
-    pio_sm_set_pins_with_mask64(pio, sm, 1ull << pin, 1ull << pin); // initial high
-    pio_sm_set_pindirs_with_mask64(pio, sm, 0ull << pin, 1ull << pin);
-    pio_gpio_init(pio, pin);
-
-    pio_sm_config c = uart_rx_8n1_program_get_default_config(offset);
-    sm_config_set_in_pins(&c, pin); // for WAIT, IN
-    sm_config_set_jmp_pin(&c, pin); // for JMP
-    // shift_right=true, autopush=false
-    sm_config_set_in_shift(&c, true, false, 8);
-    // sm_config_set_in_shift(&c, true, true, 8);
-    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);
-    float div = (float)clock_get_hz(clk_sys) / (8*baud); // read 1 bit per 8 clock cycles
-    sm_config_set_clkdiv(&c, div);
+namespace RX {
+    /* ==== [READ] uart_rx_8n1_program START ==== */
+    static inline void uart_rx_8n1_program_init(PIO pio, uint sm, uint offset, uint pin, uint baud) {
+        pio_sm_set_pins_with_mask64(pio, sm, 1ull << pin, 1ull << pin); // initial high
+        pio_sm_set_pindirs_with_mask64(pio, sm, 0ull << pin, 1ull << pin);
+        pio_gpio_init(pio, pin);
     
-    pio_sm_init(pio, sm, offset, &c);
-    // pio_sm_set_enabled(pio, sm, true);
-}
-
-static inline void rx_on(){
-    pio_sm_set_enabled(TX_pio, TX_sm, false);
-    pio_sm_set_enabled(RX_pio, RX_sm, true);
-}
-
-static inline void rxtx_on(){
-    pio_sm_set_enabled(TX_pio, TX_sm, true);
-    pio_sm_set_enabled(RX_pio, RX_sm, true);
-}
-
-/**
- * Return: -1               if FIFO empty
- * Return: uint8_t byte_val if data
- */
-// pin -> ISR -> RX FIFO
-// after sm1 start, it wait for a LOW and push 8 bits automatically to FIFO
-// No data: if a certain time pass, but FIFO is empty
-// give back control to TX if No data
-static inline int uart_rx_program_getc(PIO pio, uint sm) {
-    while (pio_sm_is_rx_fifo_empty(pio, sm))
-        return -1;
-    // should exists something, otherwise it's error
-    uint32_t res = pio_sm_get_blocking(pio, sm);
-    return (uint8_t) (res >> 24);
-    // ok (document version)
-    // 8-bit read from the uppermost byte of the FIFO, as data is left-justified
-    // io_rw_8 *rxfifo_shift = (io_rw_8*)&pio->rxf[sm] + 3;
-    // while (pio_sm_is_rx_fifo_empty(pio, sm))
-    //     tight_loop_contents();
-    // return (char)*rxfifo_shift;
-}
-
-/*
- * Return: the count of message consumed, in bytes
-*/
-static inline int uart_rx_program_read_discard_all(PIO pio, uint sm) {
-    int x = 0;
-    int consumed_message_byte_count = 0;
-    while ((x = uart_rx_program_getc(pio, sm)) > 0)
-    {
-        printf("B:%x", x);
+        pio_sm_config c = uart_rx_8n1_program_get_default_config(offset);
+        sm_config_set_in_pins(&c, pin); // for WAIT, IN
+        sm_config_set_jmp_pin(&c, pin); // for JMP
+        // shift_right=true, autopush=false
+        sm_config_set_in_shift(&c, true, false, 8);
+        // sm_config_set_in_shift(&c, true, true, 8);
+        sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);
+        float div = (float)clock_get_hz(clk_sys) / (8*baud); // read 1 bit per 8 clock cycles
+        sm_config_set_clkdiv(&c, div);
+        
+        pio_sm_init(pio, sm, offset, &c);
+        // pio_sm_set_enabled(pio, sm, true);
     }
-    return consumed_message_byte_count;
+    
+    static inline void on(){
+        pio_sm_set_enabled(RX_pio, RX_sm, true);
+    }
+    
+    static inline void off(){
+        pio_sm_set_enabled(RX_pio, RX_sm, false);
+    }
+    
+    /**
+     * Return: -1               if FIFO empty
+     * Return: uint8_t byte_val if data
+     */
+    // pin -> ISR -> RX FIFO
+    // after sm1 start, it wait for a LOW and push 8 bits automatically to FIFO
+    // No data: if a certain time pass, but FIFO is empty
+    // give back control to TX if No data
+    static inline int uart_rx_program_getc(PIO pio, uint sm) {
+        while (pio_sm_is_rx_fifo_empty(pio, sm))
+            return -1;
+        // should exists something, otherwise it's error
+        uint32_t res = pio_sm_get_blocking(pio, sm);
+        return (uint8_t) (res >> 24);
+        // ok (document version)
+        // 8-bit read from the uppermost byte of the FIFO, as data is left-justified
+        // io_rw_8 *rxfifo_shift = (io_rw_8*)&pio->rxf[sm] + 3;
+        // while (pio_sm_is_rx_fifo_empty(pio, sm))
+        //     tight_loop_contents();
+        // return (char)*rxfifo_shift;
+    }
+    
+    /*
+     * Return: the count of message consumed, in bytes
+    */
+    static inline int uart_rx_program_read_discard_all(PIO pio, uint sm) {
+        int x = 0;
+        int consumed_message_byte_count = 0;
+        while ((x = uart_rx_program_getc(pio, sm)) > 0)
+        {
+            printf("B:%x", x);
+        }
+        return consumed_message_byte_count;
+    }
+    /* ==== uart_rx_8n1_program END ==== */
 }
-/* ==== uart_rx_8n1_program END ==== */
+
 
 /* ==== Digest START ==== */
-
 static void send_digests(PIO pio, uint sm, const Digest *digests, const size_t num_digests, const double baud, const double starttime, const double endtime) {
     sleep_ms(500); // idle High 500ms (to avoid the effect of initial spikes during initialization)
     const bool TARGET_DIR = true;    // only send when dir==true
@@ -186,14 +190,11 @@ static void send_digests(PIO pio, uint sm, const Digest *digests, const size_t n
         // Assume new frame when direction changed or reasonable delay is observed between packets
         // (since bidirectional) add logic later, for now just wait some time
         if (d.dir != prevDir || timeDiffBetweenBytes > transmitTimePerBit * 32) {
-        // if (d.dir != prevDir) {
-          rx_on();
-          uart_rx_program_read_discard_all(RX_pio, RX_sm);
-          tx_on();
+            sleep_ms(200);
         }
-        // if ( timeDiffBetweenBytes > transmitTimePerBit * 3200) {
-        //     sleep_ms(300);
-        // }
+        if ( timeDiffBetweenBytes > transmitTimePerBit * 3200) {
+            sleep_ms(300);
+        }
         // otherwise, send data
         pio_sm_put_blocking(pio, sm, d.byte_val);
         prevDir = d.dir;
@@ -201,30 +202,44 @@ static void send_digests(PIO pio, uint sm, const Digest *digests, const size_t n
     sleep_ms(500); // after a section
 }
 
-static void testrun() {
-    send_test_bytes(TX_pio, TX_sm);
-    rx_on();
-    uart_rx_program_read_discard_all(RX_pio, RX_sm);
-    tx_on();
-    send_test_bytes(TX_pio, TX_sm);
-}
-static void testrunbothon() {
-    rxtx_on();
-    send_test_bytes(TX_pio, TX_sm);
-    uart_rx_program_read_discard_all(RX_pio, RX_sm);
-}
-
-void core1_main() {
-    while (true){
-      send_test_bytes(TX_pio, TX_sm);
-      tight_loop_contents();
+namespace TESTRUN {
+    static void testrunbothon() {
+        TX::on();
+        RX::on();
+        TX::send_test_bytes(TX_pio, TX_sm);
+        RX::uart_rx_program_read_discard_all(RX_pio, RX_sm);
+    }
+    
+    void test_core1_send_bytes() {
+        sleep_ms(5000);
+        while (true){
+          // send_test_bytes(TX_pio, TX_sm);
+          send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 40.928, 40.98); // baud and protocol negotiation
+          tight_loop_contents();
+        }
+    }
+    
+    static void testrun_multicore() {
+        multicore_launch_core1(test_core1_send_bytes);
+        while (true){
+            RX::uart_rx_program_read_discard_all(RX_pio, RX_sm);
+        }
     }
 }
 
-static void testrun_multicore() {
-    multicore_launch_core1(core1_main);
+void core1_send_bytes() {
+    sleep_ms(5000); // wait 5s for monitoring
     while (true){
-        uart_rx_program_read_discard_all(RX_pio, RX_sm);
+      send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 40.928, 40.98); // baud and protocol negotiation
+    }
+}
+
+static void run_multicore() {
+    // core 1
+    multicore_launch_core1(core1_send_bytes);
+    // core 0
+    while (true){
+        RX::uart_rx_program_read_discard_all(RX_pio, RX_sm);
     }
 }
 
@@ -237,22 +252,25 @@ int main() {
     if (offset < 0) {
         printf("ERROR_CANNOT_LOAD_PROGRAM");
     }
-    uart_tx_8n2_program_init(TX_pio, TX_sm, (uint)offset, TX_PIN, UART_BAUD);
+    TX::uart_tx_8n2_program_init(TX_pio, TX_sm, (uint)offset, TX_PIN, UART_BAUD);
 
     int RX_offset = pio_add_program(RX_pio, &uart_rx_8n1_program);
     hard_assert(RX_offset); // RX_offset >= 0;
-    uart_rx_8n1_program_init(RX_pio, RX_sm, (uint)RX_offset, RX_PIN, UART_BAUD);
+    RX::uart_rx_8n1_program_init(RX_pio, RX_sm, (uint)RX_offset, RX_PIN, UART_BAUD);
     // DEBUG
     // tx_on();
     //testrun();
     // while (true) testrunbothon();
-    rxtx_on();
-    testrun_multicore();
+    // rxtx_on();
+    // testrun_multicore();
     
 
+    TX::on();
+    RX::on();
     // send_digests(pio, sm, digests, NUM_DIGESTS, UART_BAUD, 0, 500); // baud and protocol negotiation
-    // send_digests(pio, sm, digests, NUM_DIGESTS, UART_BAUD, 40.928, 40.98); // baud and protocol negotiation
+    // send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 40.928, 40.98); // baud and protocol negotiation
     // send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 58.97, 59.06); // baud and protocol negotiation
+    run_multicore();
 
     while (true) tight_loop_contents();
     return 0;
