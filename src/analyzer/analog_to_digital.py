@@ -82,7 +82,7 @@ def plot(edges: Dict[str, List[Tuple[float, str]]]):
     plt.yticks([0, 1, 2], ['L', 'M', 'H'])
     # t_min, t_max = 69.18, 69.185
     # t_min, t_max = 35, 69.185
-    t_min, t_max = 40.90, 41.18
+    t_min, t_max = 40.9712, 40.9718
     plt.xlim(t_min, t_max)
     plt.xlabel('Time [s]')
     plt.ylabel('Digital Level')
@@ -181,9 +181,19 @@ def convert_to_digital(edges: Dict[str, List[Tuple[float, str]]], chan_dbg, chan
         # Under the if: one "packet" (1 byte)
         if prev_lvl == 'H' and lvl != 'H':
             t0 = t_edge # t0 is where the level change
+            # measure the assumed direction via the starting bit "0"
+            is_from_dbg_to_board = None # None is unknown
+            t_query = t0 + BIT_PERIOD * 0.5
+            lvl_chan_dbg = get_level_at(edges, chan_dbg, t_query)
+            lvl_chan_board = get_level_at(edges, chan_board, t_query)
+            if lvl_chan_board == 'H':
+                is_from_dbg_to_board = "CRITICAL_ERROR_CANNOT_PARSE"
+            if lvl_chan_board == 'M': # dbg will never be 'M' (in our cases)
+                is_from_dbg_to_board = True
+            else:
+                is_from_dbg_to_board = False
             # extract 8 data bits
             bits = []
-            is_from_dbg_to_board = None # None is unknown
             for i in range(data_bits):
                 # sample in the middle of each bit:
                 t_query = t0 + BIT_PERIOD * (1 + i + 0.5)
@@ -191,11 +201,12 @@ def convert_to_digital(edges: Dict[str, List[Tuple[float, str]]], chan_dbg, chan
                 lvl_chan_board = get_level_at(edges, chan_board, t_query)
                 bit = (1 if lvl_chan_dbg == 'H' else 0)
                 bits.append(bit)
-                if bit == 0: # since the spec says the first bit is always low, the branch always hits
-                    if lvl_chan_board == 'M': # dbg will never be 'M' (in our cases)
-                        is_from_dbg_to_board = True
-                    else:
-                        is_from_dbg_to_board = False
+                # can add validation on direction here
+                # if bit == 0: # since the spec says the first bit is always low, the branch always hits
+                #     if lvl_chan_board == 'M': # dbg will never be 'M' (in our cases)
+                #         is_from_dbg_to_board = True
+                #     else:
+                #         is_from_dbg_to_board = False
                 b = bits_to_byte(bits)
             frames.append((t0, b, is_from_dbg_to_board))
             if is_from_dbg_to_board: # (Spec: 1 + 8N2)
@@ -210,5 +221,9 @@ if __name__ == "__main__":
     edges = detect_edges(path)
     frames = convert_to_digital(edges, 'dbg-data', 'TB-data', data_bits=8)
     print(frames)
+    with open('/home/kali/src/Moclockingbird/assets/digests.json', "w+") as f:
+        for timestamp, hex_val, direction in frames:
+            line = f'{{{timestamp}, {hex_val}, {str(direction).lower()}}},\n'
+            f.write(line)
     plot(edges)
     # plot_interactive(edges)
