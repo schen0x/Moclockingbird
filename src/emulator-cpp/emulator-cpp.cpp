@@ -9,6 +9,9 @@
 #include "digests.h"
 #include "pico/multicore.h"
 
+#include "hardware/pio_instructions.h"
+
+
 const float UART_BAUD = 115200;
 const PIO TX_pio = pio0; // pio0 or pio1
 const uint TX_sm  = 0; // sm could be 0..3
@@ -21,6 +24,7 @@ const uint RST_sm  = 2;
 const uint RST_PIN = 2;         // GP2
 
 namespace TX {
+    int offset;
     /* ==== [WRITE] uart_tx_8n2_program START ==== */
     /**
      * IN pio: the PIO instance, pio0 or pio1
@@ -93,10 +97,28 @@ namespace TX {
     static inline void off (){
         pio_sm_set_enabled(TX_pio, TX_sm, false);
     }
-    /* ==== uart_tx_8n2_program END ==== */
+    /* halt exec, set line HIGH */
+    static void holdHigh() {
+        uint rst_irq_set = pio_encode_jmp(TX::offset + 7);
+        // force irq on RST
+        pio_sm_exec_wait_blocking(TX_pio, TX_sm, rst_irq_set);
+    }
+
+    /* halt exec, set line LOW */
+    static void holdLow() {
+        uint rst_irq_set = pio_encode_jmp(TX::offset + 10);
+        // force irq on RST
+        pio_sm_exec_wait_blocking(TX_pio, TX_sm, rst_irq_set);
+    }
+
+    static void resume() {
+        uint tx_irq_set = pio_encode_irq_set(false, 6);
+        pio_sm_exec_wait_blocking(TX_pio, TX_sm, tx_irq_set);
+    }
 }
 
 namespace RX {
+    int offset;
     /* ==== [READ] uart_rx_8n1_program START ==== */
     static inline void uart_rx_8n1_program_init(PIO pio, uint sm, uint offset, uint pin, uint baud) {
         pio_sm_set_pins_with_mask64(pio, sm, 1ull << pin, 1ull << pin); // initial high
@@ -164,6 +186,7 @@ namespace RX {
 
 
 namespace RST {
+    int offset;
     // If initial RST logic handled in .pio, RST default LOW, wait IRQ, then flip HIGH/LOW
     // Otherwise (which is better), RST default HIGH, wait IRQ, then flip HIGH/LOW
     static void rst_init(PIO pio, uint sm, uint offset, uint pin, float baud) {
@@ -192,6 +215,12 @@ namespace RST {
     static void off() {
         pio_sm_set_enabled(RST_pio, RST_sm, false);
     }
+    /* Force the IRQ 7 on the RST_sm, which will flip the RST line */
+    static void flip() {
+        uint rst_irq_set = pio_encode_irq_set(false, 7); // relative=false, IRQ 7
+        // force irq on RST
+        pio_sm_exec_wait_blocking(RST_pio, RST_sm, rst_irq_set);
+    }
 }
 
 
@@ -199,7 +228,7 @@ static void send_digests(PIO pio, uint sm, const Digest *digests, const size_t n
     const bool TARGET_DIR = true;    // only send when dir==true
     // bool       prevDir    = !TARGET_DIR; // force initial gap
     bool       prevDir    = TARGET_DIR;
-    double     prevTime   = 40.93398898;
+    double     prevTime   = 0;
     const double transmitTimePerBit = ((double) 1) / baud;
     for (size_t i = 0; i < NUM_DIGESTS; ++i) {
         const Digest &d = digests[i];
@@ -226,24 +255,60 @@ static void send_digests(PIO pio, uint sm, const Digest *digests, const size_t n
         if (d.dir != prevDir || timeDiffBetweenBytes > transmitTimePerBit * 32) {
             sleep_ms(5);
         }
-        if ( timeDiffBetweenBytes > transmitTimePerBit * 3200) {
-            sleep_ms(300);
-        }
+        // if ( timeDiffBetweenBytes > transmitTimePerBit * 3200) {
+        //     sleep_ms(300);
+        // }
         // otherwise, send data
         pio_sm_put_blocking(pio, sm, d.byte_val);
         prevDir = d.dir;
     }
-    sleep_ms(500); // after a section
+    // sleep_ms(500); // after a section
+    sleep_ms(30);
 }
 
 namespace TESTRUN {
 }
 
+
+static void gpio_init_TXRST(){
+    gpio_init(TX_PIN);
+    gpio_init(RST_PIN);
+}
+static void gpio_send_initial_state() {
+    gpio_set_dir(TX_PIN, GPIO_OUT);
+    gpio_set_dir(RST_PIN, GPIO_OUT);
+    gpio_put(TX_PIN, 1);  // TX HIGH
+    gpio_put(RST_PIN, 0); // RST LOW
+    sleep_ms(20);         // assume a initial state, nothing before this
+}
+// TX LOW 20ms, on 10ms RST HIGH
+static void gpio_send_reset() {
+    gpio_put(TX_PIN, 0);
+    sleep_ms(10);
+    gpio_put(RST_PIN, 1);
+    sleep_ms(10);
+    gpio_put(TX_PIN, 1); // TX HIGH
+}
+
+static void gpio_send_eon() {
+    TX::holdHigh();
+    RST::flip();
+    sleep_ms(20);
+    TX::holdLow();
+    sleep_ms(100);
+    RST::flip();
+    sleep_ms(20);
+    TX::holdHigh();
+    sleep_ms(20);
+    TX::resume();
+}
 void task_tx() {
       // send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 0.928, 500);
       send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.65, 16.7); // baud and protocol negotiation
-      // send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 40.928, 40.98); 
-      // send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 58.97, 59.06);
+      gpio_send_eon();
+      // send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 28.78, 29.2438); 
+      send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.833, 18.5); 
+      send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 28, 30); 
 }
 
 static void run_multicore() {
@@ -254,40 +319,24 @@ static void run_multicore() {
         RX::read_all(RX_pio, RX_sm);
     }
 }
-
-static void send_reset() {
-    gpio_init(TX_PIN);
-    gpio_init(RST_PIN);
-    gpio_set_dir(TX_PIN, GPIO_OUT);
-    gpio_set_dir(RST_PIN, GPIO_OUT);
-    gpio_put(TX_PIN, 1);  // TX HIGH
-    gpio_put(RST_PIN, 0); // RST LOW
-    sleep_ms(20);       // assume a initial state, nothing before this
-
-    // TX LOW 20ms, on 10ms RST HIGH
-    gpio_put(TX_PIN, 0);
-    sleep_ms(10);
-    gpio_put(RST_PIN, 1);
-    sleep_ms(10);
-    // TX HIGH
-    gpio_put(TX_PIN, 1);
-}
-
 static void init() {
     stdio_init_all();               // USB COM printf init
-    send_reset();
+    gpio_init_TXRST();
+    gpio_send_initial_state();
+    gpio_send_reset();
+
     // Load program; return instruction memory offset the program is loaded at, or -1 for error
-    int offset = pio_add_program(TX_pio, &uart_tx_8n2_program);
-    if (offset < 0) { printf("ERROR_CANNOT_LOAD_PROGRAM"); }
-    TX::uart_tx_8n2_program_init(TX_pio, TX_sm, (uint)offset, TX_PIN, UART_BAUD);
+    TX::offset = pio_add_program(TX_pio, &uart_tx_8n2_program);
+    if (TX::offset < 0) { printf("ERROR_CANNOT_LOAD_PROGRAM"); }
+    TX::uart_tx_8n2_program_init(TX_pio, TX_sm, (uint)TX::offset, TX_PIN, UART_BAUD);
 
-    int RX_offset = pio_add_program(RX_pio, &uart_rx_8n1_program);
-    hard_assert(RX_offset); // RX_offset >= 0;
-    RX::uart_rx_8n1_program_init(RX_pio, RX_sm, (uint)RX_offset, RX_PIN, UART_BAUD);
+    RX::offset = pio_add_program(RX_pio, &uart_rx_8n1_program);
+    hard_assert(RX::offset); // RX_offset >= 0;
+    RX::uart_rx_8n1_program_init(RX_pio, RX_sm, (uint)RX::offset, RX_PIN, UART_BAUD);
 
-    int RST_offset = pio_add_program(RST_pio, &rst_program);
-    hard_assert(RST_offset);
-    RST::rst_init(RST_pio, RST_sm, (uint)RST_offset, RST_PIN, UART_BAUD);
+    RST::offset = pio_add_program(RST_pio, &rst_program);
+    hard_assert(RST::offset);
+    RST::rst_init(RST_pio, RST_sm, (uint)RST::offset, RST_PIN, UART_BAUD);
 }
 static void run() {
     TX::on();

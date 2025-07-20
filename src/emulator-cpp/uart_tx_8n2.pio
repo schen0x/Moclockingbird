@@ -32,11 +32,21 @@
 ;     nop                   side 0 [7]  ; 
 ;     jmp x-- call_rst_2nd_half
 .wrap_target
-    nop                   side 1 [7]  ; either as assumed stop bits (2 HIGH (16-3)), or idle HIGH
+start:
+    nop                   side 1 [6]  ; either as assumed stop bits (2 HIGH (16-3)), or idle HIGH
     nop                   side 1 [6]
     pull ifempty block                ; ifempty: do nothing unless SHIFT_CTRL_PULL_THRESH is reached; Block: stall if TX FIFO empty
     set x, 7              side 0 [7]  ; set bit counter, and 1 LOW
 bitloop:
     out pins, 1                       ; Shift 1 bit from OSR to "outpins"
     jmp x-- bitloop              [6]  ; Each loop is 8 cycles, hold
+    jmp start             side 1
+holdH:
+    nop                   side 1
+    wait IRQ 6
+    jmp start
+holdL:
+    nop                   side 0
+    wait IRQ 6
+    jmp start
 .wrap
