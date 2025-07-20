@@ -64,6 +64,7 @@ target_link_libraries(emulator-cpp
         hardware_timer
         hardware_clocks
         pico_cyw43_arch_none
+        pico_multicore
         )
 
 pico_add_extra_outputs(emulator-cpp)
