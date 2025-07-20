@@ -20,12 +20,23 @@
 ; TX, send 1 bit each 8 cycles
 .program uart_tx_8n2
 .side_set 1 opt
+; the reset logic, needs 20ms, do it in GPIO
+;     set x, 31             side 1 [7]  ; TX line, initial HIGH
+; call_rst_1st_half:
+;     nop                   side 0 [7]  ; pull low 17 * 31 + 2 cycles
+;     jmp x-- call_rst_1st_half
+;     irq nowait 7                      ; RST.pio should flip to HIGH from the initial LOW
+;     set x, 31                         ; TX line still low
+; call_rst_2nd_half:
+;     nop                          [7]  ; TX still low
+;     nop                   side 0 [7]  ; 
+;     jmp x-- call_rst_2nd_half
 .wrap_target
-    nop                   side 1 [7] ; either as assumed stop bits (2 HIGH (16-3)), or idle HIGH
+    nop                   side 1 [7]  ; either as assumed stop bits (2 HIGH (16-3)), or idle HIGH
     nop                   side 1 [6]
-    pull ifempty block               ; ifempty: do nothing unless SHIFT_CTRL_PULL_THRESH is reached; Block: stall if TX FIFO empty
-    set x, 7              side 0 [7] ; set bit counter, and 1 LOW
+    pull ifempty block                ; ifempty: do nothing unless SHIFT_CTRL_PULL_THRESH is reached; Block: stall if TX FIFO empty
+    set x, 7              side 0 [7]  ; set bit counter, and 1 LOW
 bitloop:
-    out pins, 1                      ; Shift 1 bit from OSR to "outpins"
-    jmp x-- bitloop              [6] ; Each loop is 8 cycles, hold
+    out pins, 1                       ; Shift 1 bit from OSR to "outpins"
+    jmp x-- bitloop              [6]  ; Each loop is 8 cycles, hold
 .wrap

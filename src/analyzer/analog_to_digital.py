@@ -28,7 +28,8 @@ def detect_edges(path: str) -> Dict[str, List[Tuple[float, str]]]:
     """
     edges = {
         'dbg-data': [],
-        'TB-data': []
+        'TB-data': [],
+        'RST': []
     }
     last_levels: Dict[str, str]     = { c: None for c in edges } # {'TB-data': None, 'dbg-data': None}
     last_times: Dict[str, float]    = { c: None for c in edges }
@@ -114,7 +115,7 @@ def plot_interactive(edges: Dict[str, List[Tuple[float, str]]]):
         color='Channel',
         line_shape='hv',      # horizontal‑vertical steps
         labels={'Level': 'Digital Level'},
-        category_orders={'Channel': ['dbg-data', 'TB-data']}
+        category_orders={'Channel': ['dbg-data', 'TB-data', 'RST']}
     )
     fig.update_yaxes(tickmode='array', tickvals=[0, 1, 2], ticktext=['L', 'M', 'H'])
     fig.update_layout(title=f'Edge Transitions')
@@ -217,7 +218,8 @@ def convert_to_digital(edges: Dict[str, List[Tuple[float, str]]], chan_dbg, chan
     return frames
 
 if __name__ == "__main__":
-    path = '/home/kali/src/Moclockingbird/assets/debug_connect-9dd9-common-x20-analog.csv'
+    import sys
+    path = sys.argv[1]
     edges = detect_edges(path)
     frames = convert_to_digital(edges, 'dbg-data', 'TB-data', data_bits=8)
     print(frames)
