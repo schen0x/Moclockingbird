@@ -23,6 +23,74 @@ const PIO RST_pio = pio0;
 const uint RST_sm  = 2;
 const uint RST_PIN = 2;         // GP2
 
+namespace RX {
+    int offset;
+    /* ==== [READ] uart_rx_8n1_program START ==== */
+    static inline void uart_rx_8n1_program_init(PIO pio, uint sm, uint offset, uint pin, uint baud) {
+        pio_sm_set_pins_with_mask64(pio, sm, 1ull << pin, 1ull << pin); // initial high
+        pio_sm_set_pindirs_with_mask64(pio, sm, 0ull << pin, 1ull << pin);
+        pio_gpio_init(pio, pin);
+    
+        pio_sm_config c = uart_rx_8n1_program_get_default_config(offset);
+        sm_config_set_in_pins(&c, pin); // for WAIT, IN
+        sm_config_set_jmp_pin(&c, pin); // for JMP
+        // shift_right=true, autopush=false
+        sm_config_set_in_shift(&c, true, false, 8);
+        // sm_config_set_in_shift(&c, true, true, 8);
+        sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);
+        float div = (float)clock_get_hz(clk_sys) / (8*baud); // read 1 bit per 8 clock cycles
+        sm_config_set_clkdiv(&c, div);
+        
+        pio_sm_init(pio, sm, offset, &c);
+        // pio_sm_set_enabled(pio, sm, true);
+    }
+    
+    static inline void on(){
+        pio_sm_set_enabled(RX_pio, RX_sm, true);
+    }
+    
+    static inline void off(){
+        pio_sm_set_enabled(RX_pio, RX_sm, false);
+    }
+    
+    /**
+     * Return: -1               if FIFO empty
+     * Return: uint8_t byte_val if data
+     */
+    // pin -> ISR -> RX FIFO
+    // after sm1 start, it wait for a LOW and push 8 bits automatically to FIFO
+    // No data: if a certain time pass, but FIFO is empty
+    // give back control to TX if No data
+    static inline int uart_rx_program_getc(PIO pio, uint sm) {
+        while (pio_sm_is_rx_fifo_empty(pio, sm))
+            return -1;
+        // should exists something, otherwise it's error
+        uint32_t res = pio_sm_get_blocking(pio, sm);
+        return (uint8_t) (res >> 24);
+        // ok (document version)
+        // 8-bit read from the uppermost byte of the FIFO, as data is left-justified
+        // io_rw_8 *rxfifo_shift = (io_rw_8*)&pio->rxf[sm] + 3;
+        // while (pio_sm_is_rx_fifo_empty(pio, sm))
+        //     tight_loop_contents();
+        // return (char)*rxfifo_shift;
+    }
+    
+    /*
+     * Return: the count of message consumed, in bytes
+    */
+    static inline int read_all() {
+        int x = 0;
+        int consumed_message_byte_count = 0;
+        while ((x = uart_rx_program_getc(RX_pio, RX_sm)) > 0)
+        {
+            printf("B:%x", x);
+        }
+        return consumed_message_byte_count;
+    }
+    /* ==== uart_rx_8n1_program END ==== */
+}
+
+
 namespace TX {
     int offset;
     /* ==== [WRITE] uart_tx_8n2_program START ==== */
@@ -115,73 +183,66 @@ namespace TX {
         uint tx_irq_set = pio_encode_irq_set(false, 6);
         pio_sm_exec_wait_blocking(TX_pio, TX_sm, tx_irq_set);
     }
-}
 
-namespace RX {
-    int offset;
-    /* ==== [READ] uart_rx_8n1_program START ==== */
-    static inline void uart_rx_8n1_program_init(PIO pio, uint sm, uint offset, uint pin, uint baud) {
-        pio_sm_set_pins_with_mask64(pio, sm, 1ull << pin, 1ull << pin); // initial high
-        pio_sm_set_pindirs_with_mask64(pio, sm, 0ull << pin, 1ull << pin);
-        pio_gpio_init(pio, pin);
-    
-        pio_sm_config c = uart_rx_8n1_program_get_default_config(offset);
-        sm_config_set_in_pins(&c, pin); // for WAIT, IN
-        sm_config_set_jmp_pin(&c, pin); // for JMP
-        // shift_right=true, autopush=false
-        sm_config_set_in_shift(&c, true, false, 8);
-        // sm_config_set_in_shift(&c, true, true, 8);
-        sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);
-        float div = (float)clock_get_hz(clk_sys) / (8*baud); // read 1 bit per 8 clock cycles
-        sm_config_set_clkdiv(&c, div);
-        
-        pio_sm_init(pio, sm, offset, &c);
-        // pio_sm_set_enabled(pio, sm, true);
-    }
-    
-    static inline void on(){
-        pio_sm_set_enabled(RX_pio, RX_sm, true);
-    }
-    
-    static inline void off(){
-        pio_sm_set_enabled(RX_pio, RX_sm, false);
-    }
-    
+    // static void uart_tx_8n2_send_byte(PIO pio, uint sm, const uint8_t *bytes, size_t length) {
+    //     for (size_t i = 0; i < length; ++i) {
+    //         // alternative raw method: // pio->txf[sm] = (125000000 / (2 * 250)) - 3;
+    //         // the function stalls the processor when the TX FIFO is full
+    //         // TX FIFO is 4 x 32 bits (uint32_t), but it's fine since the sm is configured to autopull 8 bits a time
+    //         pio_sm_put_blocking(pio, sm, bytes[i]);
+    //     }
+    // }
+
     /**
-     * Return: -1               if FIFO empty
-     * Return: uint8_t byte_val if data
+     * the TX .pio send 1 byte, if FIFO has 1 byte only
+     * so push 1 by one, receive, then next
      */
-    // pin -> ISR -> RX FIFO
-    // after sm1 start, it wait for a LOW and push 8 bits automatically to FIFO
-    // No data: if a certain time pass, but FIFO is empty
-    // give back control to TX if No data
-    static inline int uart_rx_program_getc(PIO pio, uint sm) {
-        while (pio_sm_is_rx_fifo_empty(pio, sm))
-            return -1;
-        // should exists something, otherwise it's error
-        uint32_t res = pio_sm_get_blocking(pio, sm);
-        return (uint8_t) (res >> 24);
-        // ok (document version)
-        // 8-bit read from the uppermost byte of the FIFO, as data is left-justified
-        // io_rw_8 *rxfifo_shift = (io_rw_8*)&pio->rxf[sm] + 3;
-        // while (pio_sm_is_rx_fifo_empty(pio, sm))
-        //     tight_loop_contents();
-        // return (char)*rxfifo_shift;
-    }
-    
-    /*
-     * Return: the count of message consumed, in bytes
-    */
-    static inline int read_all(PIO pio, uint sm) {
-        int x = 0;
-        int consumed_message_byte_count = 0;
-        while ((x = uart_rx_program_getc(pio, sm)) > 0)
-        {
-            printf("B:%x", x);
+    static void send_digests(PIO pio, uint sm, const Digest *digests, const size_t num_digests, const double baud, const double starttime, const double endtime) {
+        const bool TARGET_DIR = true;    // only send when dir==true
+        // bool       prevDir    = !TARGET_DIR; // force initial gap
+        bool       prevDir    = TARGET_DIR;
+        double     prevTime   = 0;
+        const double transmitTimePerBit = ((double) 1) / baud;
+        for (size_t i = 0; i < NUM_DIGESTS; ++i) {
+            const Digest &d = digests[i];
+            // Skip unwanted directions, but remember last seen
+            if (d.dir != TARGET_DIR) {
+                prevDir = d.dir;
+                prevTime = d.timestamp;
+                continue;
+            }
+            double timeDiffBetweenBytes = d.timestamp - prevTime;
+            // update prevTime
+            prevTime = d.timestamp;
+            // end if after end
+            if (d.timestamp > endtime) {
+                break;
+            }
+            // next if before start
+            if (d.timestamp < starttime) {
+                continue;
+            }
+            // Wait the response to finsh if new frame
+            // Assume new frame when direction changed or reasonable delay is observed between packets
+            // (since bidirectional) add logic later, for now just wait some time
+            if (d.dir != prevDir || timeDiffBetweenBytes > transmitTimePerBit * 5) {
+                sleep_ms(5);
+                // RX::read_all();
+            }
+            // RX::read_all();
+            // if ( timeDiffBetweenBytes > transmitTimePerBit * 3200) {
+            //     sleep_ms(300);
+            // }
+            // otherwise, push 1 byte to FIFO
+            pio_sm_put_blocking(pio, sm, d.byte_val);
+            prevDir = d.dir;
+            // RX::read_all();
+            // sleep_ms(1);
+            
         }
-        return consumed_message_byte_count;
+        // sleep_ms(500); // after a section
+        sleep_ms(30);
     }
-    /* ==== uart_rx_8n1_program END ==== */
 }
 
 
@@ -223,49 +284,6 @@ namespace RST {
     }
 }
 
-
-static void send_digests(PIO pio, uint sm, const Digest *digests, const size_t num_digests, const double baud, const double starttime, const double endtime) {
-    const bool TARGET_DIR = true;    // only send when dir==true
-    // bool       prevDir    = !TARGET_DIR; // force initial gap
-    bool       prevDir    = TARGET_DIR;
-    double     prevTime   = 0;
-    const double transmitTimePerBit = ((double) 1) / baud;
-    for (size_t i = 0; i < NUM_DIGESTS; ++i) {
-        const Digest &d = digests[i];
-        // Skip unwanted directions, but remember last seen
-        if (d.dir != TARGET_DIR) {
-            prevDir = d.dir;
-            prevTime = d.timestamp;
-            continue;
-        }
-        double timeDiffBetweenBytes = d.timestamp - prevTime;
-        // update prevTime
-        prevTime = d.timestamp;
-        // end if after end
-        if (d.timestamp > endtime) {
-            break;
-        }
-        // next if before start
-        if (d.timestamp < starttime) {
-            continue;
-        }
-        // Wait the response to finsh if new frame
-        // Assume new frame when direction changed or reasonable delay is observed between packets
-        // (since bidirectional) add logic later, for now just wait some time
-        if (d.dir != prevDir || timeDiffBetweenBytes > transmitTimePerBit * 32) {
-            sleep_ms(5);
-        }
-        // if ( timeDiffBetweenBytes > transmitTimePerBit * 3200) {
-        //     sleep_ms(300);
-        // }
-        // otherwise, send data
-        pio_sm_put_blocking(pio, sm, d.byte_val);
-        prevDir = d.dir;
-    }
-    // sleep_ms(500); // after a section
-    sleep_ms(30);
-}
-
 namespace TESTRUN {
 }
 
@@ -304,11 +322,10 @@ static void gpio_send_eon() {
 }
 void task_tx() {
       // send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 0.928, 500);
-      send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.65, 16.7); // baud and protocol negotiation
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.65, 16.7); // baud and protocol negotiation
       gpio_send_eon();
-      // send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 28.78, 29.2438); 
-      send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.833, 18.5); 
-      send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 28, 30); 
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.833, 18.5); 
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 28, 30); 
 }
 
 static void run_multicore() {
@@ -316,7 +333,8 @@ static void run_multicore() {
     multicore_launch_core1(task_tx);
     // core 0 RX
     while (true){
-        RX::read_all(RX_pio, RX_sm);
+        tight_loop_contents();
+        // RX::read_all(RX_pio, RX_sm);
     }
 }
 static void init() {

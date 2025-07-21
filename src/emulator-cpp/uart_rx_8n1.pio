@@ -49,8 +49,8 @@ inloop:
     jmp start                      ; Don't push data if frame error
 
 stopbit_check_ok:                  ; No delay before returning to start; a little slack is important in case the TX clock is slightly too fast(?)
-    ; push iffull noblock            ; do nothing until ISR reach thresh; no block even when RX FIFO is full; noblock means use a logic analyser to capture the response
-    push iffull block              ; to receive all
+    push iffull noblock            ; do nothing until ISR reach thresh; no block even when RX FIFO is full; noblock means use a logic analyser to capture the response
+    ; push iffull block              ; to receive all
     ; push block                     ; debug
 .wrap
 
