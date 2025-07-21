@@ -358,7 +358,8 @@ class RL78:
         return True
 
 if __name__ == '__main__':
-    rl78 = RL78('ftdi://ftdi:232h/0', 'COM5')
+    # rl78 = RL78('ftdi://ftdi:232h/0', 'COM5')
+    rl78 = RL78('ftdi:///1', '/dev/ttyAMA10')
     if not rl78.reset(RL78.MODE_A_1WIRE):
         print('failed to init a')
         exit()
