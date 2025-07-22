@@ -10,14 +10,14 @@ def delay(amount):
             return
 
 # for C232HM-DDHSL-0 cable
-WIRE_ORANGE = 1 << 0
-WIRE_YELLOW = 1 << 1
-WIRE_GREEN = 1 << 2
-WIRE_BROWN = 1 << 3
-WIRE_GRAY = 1 << 4
-WIRE_PURPLE = 1 << 5
-WIRE_WHITE = 1 << 6
-WIRE_BLUE = 1 << 7
+WIRE_ORANGE = 1 << 0 # 2 TCK    AD0
+WIRE_YELLOW = 1 << 1 # 3 TDI    AD1
+WIRE_GREEN = 1 << 2  # 4 TDO    AD2
+WIRE_BROWN = 1 << 3  # 5 TMS    AD3
+WIRE_GRAY = 1 << 4   # 6 GPIOL0 AD4
+WIRE_PURPLE = 1 << 5 # 7 GPIOL1 AD5
+WIRE_WHITE = 1 << 6  # 8 GPIOL2 AD6
+WIRE_BLUE = 1 << 7   # 9 GPIOL3 AD7
 
 class Reset:
     def __init__(s, url):
@@ -26,7 +26,7 @@ class Reset:
         s.gpio.open_from_url(url, direction = WIRE_GRAY | WIRE_GREEN)
 
     def enter_rom(s):
-        s.gpio.set_direction(WIRE_GRAY | WIRE_GREEN)
+        s.gpio.set_direction(WIRE_GRAY | WIRE_GREEN, WIRE_GRAY | WIRE_GREEN)
         # RESET=0, TOOL0=0
         s.gpio.write_port(0)
         delay(.04)
@@ -37,7 +37,7 @@ class Reset:
         s.gpio.write_port(WIRE_GRAY | WIRE_GREEN)
         delay(.01)
         # stop driving TOOL0 (with this ftdi device - another one takes over)
-        s.gpio.set_direction(WIRE_GRAY)
+        s.gpio.set_direction(WIRE_GRAY,  WIRE_GRAY)
 
 def read_all(port, size):
     data = b''
@@ -309,7 +309,7 @@ class ProtoOCD:
     def write(s, addr, data):
         size = size8(len(data))
         if size is None: return None
-        s.send_cmd(struct.pack('<BHB%dB' (len(data)), s.WRITE, addr, size, *data))
+        s.send_cmd(struct.pack('<BHB%dB' %(len(data)), s.WRITE, addr, size, *data))
         return s.read_all(1)[0] == s.WRITE
     def call_f07e0(s):
         s.send_cmd(struct.pack('B', s.EXEC))
