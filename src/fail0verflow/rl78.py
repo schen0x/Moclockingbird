@@ -5,7 +5,7 @@ import pyftdi.serialext
 
 
 def delay(amount):
-    now = start = time.perf_counter()
+    now = start = time.perf_counter()  # 1 is 1 second
     while True:
         now = time.perf_counter()
         if now - start >= amount:
@@ -36,27 +36,31 @@ class Reset:
     def enter_rom(s):
         """
         GpioController.write_port(hex); hex: 1<<0 ... 1<<7
-        start: TOOL0: 1, RST: 0
-        sig0:  TOOL0: 0, RST: 1
+        idle: TOOL0: 1, RST: 0
+        start:  TOOL0: 0, RST: 1
                TOOL0: 1, RST: 
                          RST: 0
                TOOL0: 0, RST: 0
         End: MUST BE ALL 0
         """
-        WIRE_RST   = WIRE_GRAY
-        WIRE_TOOL0 = WIRE_GREEN
-        s.gpio.set_direction(WIRE_RST | WIRE_TOOL0, WIRE_RST | WIRE_TOOL0)
-        # init, set all pins to 0 (RESET=0, TOOL0=0)
-        s.gpio.write_port(0)
+        RST   = WIRE_GRAY
+        TOOL0 = WIRE_GREEN
+        s.gpio.set_direction(RST | TOOL0, RST | TOOL0)
+        # idle: TOOL0: 1, RST: 0
+        s.gpio.write_port(TOOL0)
         delay(.04)
-        # RESET=1, TOOL0=0
-        s.gpio.write_port(WIRE_RST)
-        delay(.001)
-        # RESET=1, TOOL0=1
-        s.gpio.write_port(WIRE_RST | WIRE_TOOL0)
+        # start:  TOOL0: 0, RST: 0 # 10ms
+        s.gpio.write_port(0)
         delay(.01)
-        # stop driving TOOL0 (give control to the other functions)
-        s.gpio.set_direction(WIRE_RST, WIRE_RST)
+        # TOOL0: 0, RST: 1
+        s.gpio.write_port(RST) # 10ms
+        delay(.01)
+        # RESET=1, TOOL0=1 default?
+        s.gpio.write_port(RST | TOOL0)
+        delay(.005)
+        # # stop driving TOOL0 (give control to the other functions)
+        # s.gpio.set_direction(RST, RST)
+        s.gpio.close()
     
     def debug_cleanup(s):
         """
@@ -402,8 +406,8 @@ def debug():
     def _ftdi():
         # r = Reset('ftdi:///1')
         r = Reset('ftdi://ftdi:232h/1')
-        # r.enter_rom()
-        r.debug_cleanup()
+        r.enter_rom()
+        # r.debug_cleanup()
     def ___serial():
         # port = serial.Serial(port='/dev/ttyAMA10', baudrate=9600, timeout=0, stopbits=2)
         # port = serial.Serial(port='/dev/ttyUSB0', baudrate=9600, timeout=1, stopbits=2)
