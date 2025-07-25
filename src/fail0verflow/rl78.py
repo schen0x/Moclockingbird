@@ -1,6 +1,8 @@
-from pyftdi.gpio import GpioController
+from pyftdi.gpio import GpioAsyncController
 import serial
 import time, struct, binascii, code, os
+import pyftdi.serialext
+
 
 def delay(amount):
     now = start = time.perf_counter()
@@ -9,35 +11,60 @@ def delay(amount):
         if now - start >= amount:
             return
 
-# for C232HM-DDHSL-0 cable
-WIRE_ORANGE = 1 << 0 # 2 TCK    AD0
-WIRE_YELLOW = 1 << 1 # 3 TDI    AD1
-WIRE_GREEN = 1 << 2  # 4 TDO    AD2
-WIRE_BROWN = 1 << 3  # 5 TMS    AD3
-WIRE_GRAY = 1 << 4   # 6 GPIOL0 AD4
-WIRE_PURPLE = 1 << 5 # 7 GPIOL1 AD5
-WIRE_WHITE = 1 << 6  # 8 GPIOL2 AD6
-WIRE_BLUE = 1 << 7   # 9 GPIOL3 AD7
+# originally C232HM-DDHSL-0, also tested on FT232H
+#                     # FT232H_Channel_Description FT232H_Channel_Namecable
+WIRE_ORANGE = 1 << 0  # TCK                        AD0
+WIRE_YELLOW = 1 << 1  # TDI                        AD1
+WIRE_GREEN = 1 << 2   # TDO                        AD2
+WIRE_BROWN = 1 << 3   # TMS                        AD3
+WIRE_GRAY = 1 << 4    # GPIOL0                     AD4
+WIRE_PURPLE = 1 << 5  # GPIOL1                     AD5
+WIRE_WHITE = 1 << 6   # GPIOL2                     AD6
+WIRE_BLUE = 1 << 7    # GPIOL3                     AD7
+                    
 
+# the RESET logic
 class Reset:
     def __init__(s, url):
+        """
+        this open gpio pin along with the ttyUSB0
+        """
         # init gpio mode with gray (conncted to RESET) and green (TOOL0) as outputs
-        s.gpio = GpioController()
-        s.gpio.open_from_url(url, direction = WIRE_GRAY | WIRE_GREEN)
+        s.gpio = GpioAsyncController()
+        s.gpio.open_from_url(url, direction = WIRE_GRAY | WIRE_GREEN) # RESET, TOOL0 direction: out
 
     def enter_rom(s):
-        s.gpio.set_direction(WIRE_GRAY | WIRE_GREEN, WIRE_GRAY | WIRE_GREEN)
-        # RESET=0, TOOL0=0
+        """
+        GpioController.write_port(hex); hex: 1<<0 ... 1<<7
+        start: TOOL0: 1, RST: 0
+        sig0:  TOOL0: 0, RST: 1
+               TOOL0: 1, RST: 
+                         RST: 0
+               TOOL0: 0, RST: 0
+        End: MUST BE ALL 0
+        """
+        WIRE_RST   = WIRE_GRAY
+        WIRE_TOOL0 = WIRE_GREEN
+        s.gpio.set_direction(WIRE_RST | WIRE_TOOL0, WIRE_RST | WIRE_TOOL0)
+        # init, set all pins to 0 (RESET=0, TOOL0=0)
         s.gpio.write_port(0)
         delay(.04)
         # RESET=1, TOOL0=0
-        s.gpio.write_port(WIRE_GRAY)
+        s.gpio.write_port(WIRE_RST)
         delay(.001)
         # RESET=1, TOOL0=1
-        s.gpio.write_port(WIRE_GRAY | WIRE_GREEN)
+        s.gpio.write_port(WIRE_RST | WIRE_TOOL0)
         delay(.01)
-        # stop driving TOOL0 (with this ftdi device - another one takes over)
-        s.gpio.set_direction(WIRE_GRAY,  WIRE_GRAY)
+        # stop driving TOOL0 (give control to the other functions)
+        s.gpio.set_direction(WIRE_RST, WIRE_RST)
+    
+    def debug_cleanup(s):
+        """
+        Cleanup, disconnect the gpio device
+        """
+        s.gpio.close()
+
+
 
 def read_all(port, size):
     data = b''
@@ -325,9 +352,18 @@ class RL78:
     MODE_OCD = b'\xc5'
     BAUDRATE_INIT = 115200
     BAUDRATE_FAST = 1000000
+    reset_ctl = None
+    port = None
+    a = None
+    ocd = None
+    mode = None
     def __init__(s, gpio_url, uart_port):
-        s.reset_ctl = Reset(gpio_url)
+        """
+        TODO: uart_port, if uart, by HW spec it use the orange line (TX)
+        """
+        s.reset_ctl = Reset(gpio_url) # the RESET logic
         s.port = serial.Serial(uart_port, baudrate=s.BAUDRATE_INIT, timeout=0, stopbits=2)
+        # s.port = pyftdi.serialext.serial_for_url(gpio_url, baudrate=s.BAUDRATE_INIT)
         s.a = ProtoA(s.port)
         s.ocd = ProtoOCD(s.port)
         s.mode = None
@@ -357,12 +393,68 @@ class RL78:
             if not s.ocd.ping(): return False
         return True
 
+def debug():
+    import time
+    time.sleep(1)
+    def _pause():
+        import signal
+        signal.pause()
+    def _ftdi():
+        # r = Reset('ftdi:///1')
+        r = Reset('ftdi://ftdi:232h/1')
+        # r.enter_rom()
+        r.debug_cleanup()
+    def ___serial():
+        # port = serial.Serial(port='/dev/ttyAMA10', baudrate=9600, timeout=0, stopbits=2)
+        # port = serial.Serial(port='/dev/ttyUSB0', baudrate=9600, timeout=1, stopbits=2)
+        # TX is orange
+        port = serial.serial_for_url('spy:///dev/ttyUSB0?file=test.txt', baudrate=115200,stopbits=2, timeout=1)
+        #! port = serial.serial_for_url('spy:///dev/ttyUSB0?file=test.txt', baudrate=115200,stopbits=2, timeout=1)
+        # port = serial.Serial(port='/dev/serial/by-id/usb-FTDI_C232HM-DDHSL-0_FT7IPPYM-if00-port0', baudrate=9600, timeout=0, stopbits=2)
+        #port = pyftdi.serialext.serial_for_url('ftdi:///1', baudrate=115200)
+        # port = pyftdi.open_mpsse_from_url('ftdi:///1', baudrate=115200)
+        # port = serial.Serial(port='COM5', baudrate=9600, timeout=0, stopbits=2)
+        # port = serial.Serial(port='/dev/serial/by-id/usb-FTDI_C232HM-DDHSL-0_FT7IPPYM-if00-port0', baudrate=9600, timeout=0, stopbits=2)
+        # port.open()
+        # port.write(b'\xc5')
+        port.write('hello'.encode('utf-8'))
+    def ___jtag():
+        from pyftdi.jtag import JtagEngine, JtagTool
+        from pyftdi.bits import BitSequence
+        class j:
+            def setUp(self):
+                url = 'ftdi://ftdi:232h/1'
+                self.jtag = JtagEngine(trst=True, frequency=3E6)
+                self.jtag.configure(url)
+                self.jtag.reset()
+                self.tool = JtagTool(self.jtag)
+        j0 = j()
+        j0.setUp()
+        j0.jtag.write('3')
+    _ftdi()
+    time.sleep(1)
+    ___serial()
+    # ___jtag()
+
+    _pause()
+
 if __name__ == '__main__':
     # rl78 = RL78('ftdi://ftdi:232h/0', 'COM5')
-    rl78 = RL78('ftdi:///1', '/dev/ttyAMA10')
-    if not rl78.reset(RL78.MODE_A_1WIRE):
-        print('failed to init a')
-        exit()
-    print('sig', binascii.hexlify(rl78.a.silicon_sig()))
-    print('sec', binascii.hexlify(rl78.a.security_get()))
-    code.InteractiveConsole(locals = locals()).interact('Entering shell...')
+    # print("DEBUG START")
+    debug()
+    # print("DEBUG END")
+    # print(1)
+    # rl78 = RL78('ftdi://ftdi:232h/0', '/dev/ttyUSB0')
+#     rl78 = RL78('ftdi:///1', '/dev/ttyUSB0')
+#     # print(2)
+#     
+#     # if not rl78.reset(RL78.MODE_A_1WIRE):
+#     #     print('failed to init a')
+#     #     exit()
+#     rl78.reset(RL78.MODE_A_1WIRE)
+#     import time
+#     while True: time.sleep(1)
+    # print(3)
+    # print('sig', binascii.hexlify(rl78.a.silicon_sig()))
+    # print('sec', binascii.hexlify(rl78.a.security_get()))
+    #code.InteractiveConsole(locals = locals()).interact('Entering shell...')
