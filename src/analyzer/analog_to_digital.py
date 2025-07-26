@@ -83,7 +83,7 @@ def plot(edges: Dict[str, List[Tuple[float, str]]]):
     plt.yticks([0, 1, 2], ['L', 'M', 'H'])
     # t_min, t_max = 69.18, 69.185
     # t_min, t_max = 35, 69.185
-    t_min, t_max = 40.9712, 40.9718
+    t_min, t_max = 16.68804, 16.68849
     plt.xlim(t_min, t_max)
     plt.xlabel('Time [s]')
     plt.ylabel('Digital Level')
@@ -151,7 +151,7 @@ def get_level_at(edges, chan, t_query):
 #             break
 #     return lv_query
 
-def bits_to_byte(bits):
+def bits_to_byte(bits) -> int:
     """
     Convert an array of 8 bits (LSB first) into one byte.
     IN: bits: [b0, b1, …, b7] where b0 is least significant bit.
@@ -225,7 +225,7 @@ if __name__ == "__main__":
     print(frames)
     with open('/home/kali/src/Moclockingbird/assets/digests.json', "w+") as f:
         for timestamp, hex_val, direction in frames:
-            line = f'{{{timestamp}, {hex_val}, {str(direction).lower()}}},\n'
+            line = f'{{{timestamp}, {hex(hex_val)}, {str(direction).lower()}}},\n' # for cpp
             f.write(line)
-    plot(edges)
+    # plot(edges)
     # plot_interactive(edges)
