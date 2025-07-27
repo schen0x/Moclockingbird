@@ -3,21 +3,28 @@
 import csv
 from typing import Dict, List, Tuple
 
-TH_LOW = 0.3    # 0 ≤ V < 0.3 → L
-TH_HIGH = 1.2   # 0.3 ≤ V < 1.2 → M,  V ≥ 1.2 → H
-def analog_to_level(voltage: float) -> str:
+# TH_LOW = 0.3    # 0 ≤ V < 0.3 → L
+TH_HIGH = 2.95
+def analog_to_levels(vDBG: float, vTB: float) -> str:
     """
     Map a single analog voltage to a digital level:
       0.0–0.3 → 'L'
-      0.3–1.2 → 'M'
+      0.3–1.2 → 'M' # originally, in TB setup (no ext power), a 0 bit can be
+                    #   - dbg(drive), TB: 0, 700mV; dbg, TB(drive): 100, 100mV
+                    #   - thus, if 0.3-1.2 as M: (L, M); (L, L)
+                    # however, in barebone 
+                    #   - dbg(drive), TB: 233, 531mV; dbg, TB(drive): 2.2-2.7V, 700mV-1.9V
+                    #   - thus, 2.9+ is 'H', others:
+                    #   - compare vDbg vTB; lower is L, higher is M
       1.2+   → 'H'
     """
-    if voltage < TH_LOW:
-        return 'L'
-    elif voltage < TH_HIGH:
-        return 'M'
-    else:
-        return 'H'
+    if (vDBG > TH_HIGH) and (vTB > TH_HIGH): # digital 1; it's really high (because of the pull-up)
+        return {'dbg-data': 'H', 'TB-data': 'H'}
+    else: # digital 0
+        if vDBG < vTB: # original config
+            return  {'dbg-data': 'L', 'TB-data': 'M'}
+        else: # in original 'L', 'L', 'TB-data' is also slightly (~10mV) lower
+            return  {'dbg-data': 'M', 'TB-data': 'L'}
 
 def detect_edges(path: str) -> Dict[str, List[Tuple[float, str]]]:
     """
@@ -29,7 +36,7 @@ def detect_edges(path: str) -> Dict[str, List[Tuple[float, str]]]:
     edges = {
         'dbg-data': [],
         'TB-data': [],
-        'RST': []
+        #'RST': []
     }
     last_levels: Dict[str, str]     = { c: None for c in edges } # {'TB-data': None, 'dbg-data': None}
     last_times: Dict[str, float]    = { c: None for c in edges }
@@ -38,8 +45,12 @@ def detect_edges(path: str) -> Dict[str, List[Tuple[float, str]]]:
         # prev_levels = {'TB-data': None, 'dbg-data': None}
         for row in reader:
             t = float(row['Time [s]'])
+            vDBG = float(row['dbg-data'])
+            vTB = float(row['TB-data'])
+            lvls = { 'TB-data': "", 'dbg-data': "" }
+            lvls = analog_to_levels(vDBG, vTB)
             for chan in edges:
-                lvl = analog_to_level(float(row[chan]))
+                lvl = lvls[chan]
                 prev_level = last_levels[chan]
                 prev_time  = last_times[chan]
                 if prev_level is None:
