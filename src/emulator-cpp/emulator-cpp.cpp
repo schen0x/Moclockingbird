@@ -334,7 +334,10 @@ void task_tx() {
       set_baud();
       gpio_send_eon();
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.8359, 16.8383, 3, 10); // 0xc5, Set baud again, RST
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 40, 30, 30); // Low speed, 30, 30 to remain separation
+      //ok TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 99, 30, 30); // Low speed, 30, 30 to remain separation
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 17.1532431, 30, 30); // unlock (0xF2) ok
+      // ?TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 28.719, 99, 30, 30); // Low speed, 30, 30 to remain separation
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.201, 99, 30, 30); // Low speed, 30, 30 to remain separation
       // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.840, 40, 3, 30);
 
       // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.1989, 29.204, 3, 10); // read
