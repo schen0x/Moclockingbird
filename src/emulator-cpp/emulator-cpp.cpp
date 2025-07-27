@@ -197,7 +197,7 @@ namespace TX {
      * the TX .pio send 1 byte, if FIFO has 1 byte only
      * so push 1 by one, receive, then next
      */
-    static void send_digests(PIO pio, uint sm, const Digest *digests, const size_t num_digests, const double baud, const double starttime, const double endtime, const int delayMs) {
+    static void send_digests(PIO pio, uint sm, const Digest *digests, const size_t num_digests, const double baud, const double starttime, const double endtime, const int delayMsFrame, const int delayMsSection) {
         const bool TARGET_DIR = true;    // only send when dir==true
         // bool       prevDir    = !TARGET_DIR; // force initial gap
         bool       prevDir    = TARGET_DIR;
@@ -226,7 +226,7 @@ namespace TX {
             // Assume new frame when direction changed or reasonable delay is observed between packets
             // (since bidirectional) add logic later, for now just wait some time
             if (d.dir != prevDir || timeDiffBetweenBytes > transmitTimePerBit * 10 * 2) { // 2 bytes of 1+8N1
-                sleep_ms(1);
+                sleep_ms(delayMsFrame);
                 // RX::read_all();
             }
             // RX::read_all();
@@ -241,7 +241,7 @@ namespace TX {
             
         }
         // sleep_ms(500); // after a section
-        sleep_ms(delayMs);
+        sleep_ms(delayMsSection);
     }
 }
 
@@ -322,20 +322,24 @@ static void gpio_send_eon() {
     TX::resume();
 }
 static void set_baud() {
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.6570, 16.6574, 1); // 0x3a, single line
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.6574, 16.6584, 20); // set baud, ACK
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.6870, 16.6886, 3); // reset, ACK
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.689, 16.693, 7); // Silicon Signature
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.693, 16.697, 3); // Block Blank Check 0-0x0003ffff,Not Blank
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.6570, 16.6574, 1, 1);// 0x3a, single line
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.6574, 16.6584, 1, 20); // set baud, ACK
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.6870, 16.6886, 1, 3); // reset, ACK
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.689, 16.693, 1, 7); // Silicon Signature
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.693, 16.697, 1, 3); // Block Blank Check 0-0x0003ffff,Not Blank
 }
 void task_tx() {
       // send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 0.928, 500);
       // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.65, 16.7, 8); // baud flow (baud,ACK + reset,ACK + Silicon Signature,ACK,Data, Block Blank Check 0-0x0003ffff,Not Blank, )
       set_baud();
       gpio_send_eon();
-      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.8, 500, 30);
-      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.8359, 16.839, 10); // 0xc5, Set baud again, RST
-      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.201, 99, 50);  // Write 0x93,
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.8359, 16.8383, 3, 10); // 0xc5, Set baud again, RST
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 40, 30, 30); // Low speed, 30, 30 to remain separation
+      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.840, 40, 3, 30);
+
+      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.1989, 29.204, 3, 10); // read
+      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.201, 29.204, 3, 10); // write
+      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.213, 29.246, 3, 100);
 }
 
 static void run_multicore() {
