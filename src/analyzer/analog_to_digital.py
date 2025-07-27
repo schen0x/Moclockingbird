@@ -211,9 +211,10 @@ def convert_to_digital(edges: Dict[str, List[Tuple[float, str]]], chan_dbg, chan
                 b = bits_to_byte(bits)
             frames.append((t0, b, is_from_dbg_to_board))
             if is_from_dbg_to_board: # (Spec: 1 + 8N2)
-                t0 += BIT_PERIOD * (1 + 8 + 2)
+                # t0 += BIT_PERIOD * (1 + 8 + 2 - 0.5) # -0.5 because we need a 'H' analog datapoint when detecting falling edge
+                t0 += BIT_PERIOD * (1 + 8 + 1 - 0.5) # (document lies (...not actually? Anyway)), debugger do 8N1 sometimes
             else: # (Spec: 1 + 8N1)
-                t0 += BIT_PERIOD * (1 + 8 + 1)
+                t0 += BIT_PERIOD * (1 + 8 + 1 - 0.5)
         prev_lvl = lvl
     return frames
 
