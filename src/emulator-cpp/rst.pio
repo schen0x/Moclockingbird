@@ -1,0 +1,16 @@
+; the rst line logic:
+; - default LOW
+; - on init, TX will pull LOW 20ms, during which set IRQ
+; - rst receive IRQ and pull HIGH, until next IRQ
+.program rst
+.wrap_target
+start:
+    wait IRQ 7        ; wait irq 7 to be set by the main SM
+    jmp pin flip_off
+    set pins, 1         ; flip RST_PIN HIGH
+    irq clear 7         ; clear flag so we can wait on it again
+    jmp start
+flip_off:
+    set pins, 0         ; drive RST_PIN high
+    irq clear 7         ; clear flag so we can wait on it again
+.wrap

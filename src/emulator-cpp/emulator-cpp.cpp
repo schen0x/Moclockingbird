@@ -197,7 +197,7 @@ namespace TX {
      * the TX .pio send 1 byte, if FIFO has 1 byte only
      * so push 1 by one, receive, then next
      */
-    static void send_digests(PIO pio, uint sm, const Digest *digests, const size_t num_digests, const double baud, const double starttime, const double endtime) {
+    static void send_digests(PIO pio, uint sm, const Digest *digests, const size_t num_digests, const double baud, const double starttime, const double endtime, const int delayMs) {
         const bool TARGET_DIR = true;    // only send when dir==true
         // bool       prevDir    = !TARGET_DIR; // force initial gap
         bool       prevDir    = TARGET_DIR;
@@ -241,7 +241,7 @@ namespace TX {
             
         }
         // sleep_ms(500); // after a section
-        sleep_ms(30);
+        sleep_ms(delayMs);
     }
 }
 
@@ -322,10 +322,11 @@ static void gpio_send_eon() {
 }
 void task_tx() {
       // send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 0.928, 500);
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.65, 16.7); // baud and protocol negotiation
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.65, 16.7, 8); // baud flow (baud,ACK + reset,ACK + Silicon Signature,ACK,Data, Block Blank Check 0-0x0003ffff,Not Blank, )
       gpio_send_eon();
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.833, 18.5); 
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 28, 30); 
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.8, 500, 30);
+      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.8359, 16.839, 10); // 0xc5, Set baud again, RST
+      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.201, 99, 50);  // Write 0x93,
 }
 
 static void run_multicore() {
