@@ -13,13 +13,13 @@
 
 
 const float UART_BAUD = 115200;
-const PIO TX_pio = pio0; // pio0 or pio1
+const PIO TX_pio = pio1; // pio0 or pio1
 const uint TX_sm  = 0; // sm could be 0..3
-const PIO RX_pio = pio1;
+const PIO RX_pio = pio0; // use different pio with TX to use PIO_FIFO_JOIN_RX
 const uint RX_sm  = 1;
 const uint TX_PIN = 0;          // GP0
-const uint RX_PIN = 1;          // GP1
-const PIO RST_pio = pio0;
+const uint RX_PIN = 16;         // GP16 to avoid line interferance with RST
+const PIO RST_pio = pio1;
 const uint RST_sm  = 2;
 const uint RST_PIN = 2;         // GP2
 
@@ -37,7 +37,7 @@ namespace RX {
         // shift_right=true, autopush=false
         sm_config_set_in_shift(&c, true, false, 8);
         // sm_config_set_in_shift(&c, true, true, 8);
-        sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);
+        sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
         float div = (float)clock_get_hz(clk_sys) / (8*baud); // read 1 bit per 8 clock cycles
         sm_config_set_clkdiv(&c, div);
         
@@ -350,8 +350,8 @@ static void run_multicore() {
     multicore_launch_core1(task_tx);
     // core 0 RX
     while (true){
-        tight_loop_contents();
-        // RX::read_all(RX_pio, RX_sm);
+        RX::read_all();
+        // tight_loop_contents();
     }
 }
 static void init() {
