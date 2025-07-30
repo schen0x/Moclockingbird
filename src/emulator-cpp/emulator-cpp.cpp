@@ -10,7 +10,10 @@
 #include "pico/multicore.h"
 
 #include "hardware/pio_instructions.h"
+#include "pico/bootrom.h"
+#include "boot/bootrom_constants.h"
 
+#define DEBUG_MODE 1
 
 const float UART_BAUD = 115200;
 const PIO TX_pio = pio1; // pio0 or pio1
@@ -22,6 +25,7 @@ const uint RX_PIN = 16;         // GP16 to avoid interferance with RST
 const PIO RST_pio = pio1;
 const uint RST_sm  = 2;
 const uint RST_PIN = 2;         // GP2
+const uint POWER_CTL_PIN = 21;   // GP21
 
 namespace RX {
     int offset;
@@ -89,14 +93,14 @@ namespace RX {
     }
     /* Hold/pause RX, wait irq 5 to resume (set manually) */
     static void hold() {
-        uint hold_irq_set = pio_encode_jmp(RX::offset + 9);
-        pio_sm_exec_wait_blocking(RX_pio, RX_sm, hold_irq_set);
+        uint rx_jmp_hold = pio_encode_jmp(RX::offset + 9);
+        pio_sm_exec_wait_blocking(RX_pio, RX_sm, rx_jmp_hold);
     }
 
     /* Set IRQ 5 */
     static void resume() {
-        uint tx_irq_set = pio_encode_irq_set(false, 5);
-        pio_sm_exec_wait_blocking(TX_pio, TX_sm, tx_irq_set);
+        uint rx_irq_resume = pio_encode_irq_set(false, 5);
+        pio_sm_exec_wait_blocking(RX_pio, RX_sm, rx_irq_resume);
     }
 }
 
@@ -258,6 +262,19 @@ namespace TX {
     }
 }
 
+namespace POWER_OUT {
+    static void po_gpio_init() {
+        gpio_init(POWER_CTL_PIN);
+        gpio_set_dir(POWER_CTL_PIN, GPIO_OUT);
+    }
+    static void on() {
+        gpio_put(POWER_CTL_PIN, 1); // HIGH
+    }
+    static void off() {
+        gpio_put(POWER_CTL_PIN, 0);
+    }
+}
+
 
 namespace RST {
     int offset;
@@ -341,33 +358,36 @@ static void set_baud() {
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.689, 16.693, 1, 7); // Silicon Signature
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.693, 16.697, 1, 3); // Block Blank Check 0-0x0003ffff,Not Blank
 }
-void task_tx() {
-      // send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 0.928, 500);
-      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.65, 16.7, 8); // baud flow (baud,ACK + reset,ACK + Silicon Signature,ACK,Data, Block Blank Check 0-0x0003ffff,Not Blank, )
+void task_tx0() {
       set_baud();
       gpio_send_eon();
+
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.8359, 16.8383, 3, 10); // 0xc5, Set baud again, RST
-      //ok TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 99, 30, 30); // Low speed, 30, 30 to remain separation
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 17.1532431, 30, 30); // unlock (0xF2) ok
-      // ok TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.201, 99, 30, 30); // the 1st 0x93 after 0x92, for 9dd9
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.21, 99, 30, 30); // ok
-      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.840, 40, 3, 30);
 
-      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.1989, 29.204, 3, 10); // read
-      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.201, 29.204, 3, 10); // write
-      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.213, 29.246, 3, 100);
+      // ok1 TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 17.1532431, 30, 30); // unlock (0xF2) ok
+      // ok1 TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.21, 99, 30, 30); // ok
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 17.153012690, 30, 30); // 2 bytes before unlock
 }
+// void task_tx1() {
+//     TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.153012692, 17.153012693, 30, 30); // 2 bytes before unlock
+// }
 
-/* If RX on core1 (since TX logic is more complex?) */
+/**
+ * If RX on core1 (since TX logic is more complex)
+ * - RX wait until IRQ 5
+ * - RX read 3 bytes, send to core0, and print in serial monitor for debugging
+ * - RX wait unitl IRQ 5 (Meanwhile, core0 check if data ok (chip unlocked))
+ */
 void task_rx() {
     RX::hold(); // do nothing initially, wait IRQ from main task
     // Wait for the first 3 bytes
     int byte_count = 0;
-    while (byte_count < 3)
+    int x;
+    while (byte_count < 2)
     {
-        int x = 0;
-        while ((x = RX::rx_getc(RX_pio, RX_sm)) > 0)
-        {
+        x = -1;
+        x = RX::rx_getc(RX_pio, RX_sm);
+        if (x >= 0){
             /**
              * FIFOs across cores:
              * RP2040: 32bits * 8 * 2 FIFOs (TX, RX)
@@ -388,27 +408,35 @@ void task_rx() {
 }
 
 static void run_multicore() {
-    // // core 1 TX
-    // multicore_launch_core1(task_tx); // 2 bytes before the glitch
-    // RX::resume(); // start RX via IRQ (before sending the 2 last byte)
-    // multicore_launch_core1(task_tx); // send before glitch
-    // // core 0 RX, RX on the main core to better incorporate the glitch logic
     multicore_launch_core1(task_rx);
-    task_tx(); // TODO 2 bytes before
-    // TODO peck
+    task_tx0(); // until 1 bytes before
     RX::resume();
-    multicore_fifo_pop_blocking(); // Block until there is data ready to be read
-    multicore_fifo_pop_blocking(); // Both the 1st and 2nd byte are sent by TX
-    int x = multicore_fifo_pop_blocking(); // Check the 3rd bytes
+    uint8_t theLastByte = 0xff;
+    pio_sm_put_blocking(TX_pio, TX_sm, theLastByte); // consider queuing a few bytes to add more wiggle room
+    // TODO peck with delay
+    int y = multicore_fifo_pop_blocking(); // Both the 1st byte were sent by TX, RX is core1 so we can receive it despite the pecking
+    printf("Y:%x ", y);
+    int x = multicore_fifo_pop_blocking(); // Check the next bytes
+    printf("X:%x ", x);
     if ((x - 0xF2) == 0) { // 0xF2 unlock_ok?
         // TODO task_remaining();
+        while (true) {
+            tight_loop_contents();
+        }
+        return;
+    } else {
+        // POWER_OUT::off();
+        // rom_reboot(BOOT_TYPE_NORMAL, 3, NULL, NULL); // rp2350 only // reboot after 3ms using watchdog
+        return;
     }
 }
-static void init() {
-    stdio_init_all();               // USB COM printf init
+static void hw_init() {
+    POWER_OUT::po_gpio_init();
+    POWER_OUT::on();
+
     gpio_init_TXRST();
     gpio_send_initial_state();
-    gpio_send_reset();
+    gpio_send_reset(); // this has to be done before pio init because the initial reset logic is implented with gpio
 
     // Load program; return instruction memory offset the program is loaded at, or -1 for error
     TX::offset = pio_add_program(TX_pio, &uart_tx_8n2_program);
@@ -431,7 +459,11 @@ static void run() {
 }
 
 int main() {
-    init();
+#if DEBUG_MODE == 1
+    stdio_init_all();               // USB COM printf init
+    sleep_ms(200);                  // a delay for USB COM to reconnect
+#endif
+    hw_init();
     run();
     while (true) tight_loop_contents();
     return 0;

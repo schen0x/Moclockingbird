@@ -1,22 +1,3 @@
-; .program uart_tx_8n2
-; ; .out 1 right auto 8          
-; ; .out 1 right 8          ; sm_config_set_out_shift(&c, shift_right=true, autopull=false, 8);
-; set pins, 1       [31] ; pull up
-; .wrap_target
-;     set pins, 1        ; for idle high
-;     pull ifempty block ; ifempty: do nothing unless SHIFT_CTRL_PULL_THRESH is reached; Block: stall if TX FIFO empty
-;     set pins, 0        ; set the "setpins" to low; == sends a LOW signaling the start of transmission
-;     out pins, 1        ; Shift 1 bit from OSR to "outpins"
-;     out pins, 1
-;     out pins, 1
-;     out pins, 1
-;     out pins, 1
-;     out pins, 1
-;     out pins, 1
-;     out pins, 1        ; the 8th data bit
-;     set pins, 1   [4]  ; 2 stop bits + 3 extra
-; .wrap
-
 ; TX, send 1 bit each 8 cycles
 .program uart_tx_8n2
 .side_set 1 opt
