@@ -13,6 +13,15 @@
 #include "pico/bootrom.h"
 #include "boot/bootrom_constants.h"
 
+#include <setjmp.h>
+
+static jmp_buf dst;
+
+inline void warp7() {
+    longjmp(dst, 1);
+}
+
+
 #define DEBUG_MODE 1
 
 const float UART_BAUD = 115200;
@@ -29,6 +38,10 @@ const uint POWER_CTL_PIN = 15;   // GP15
 
 namespace RX {
     int offset;
+    const PIO pio = RX_pio;
+    const uint sm = RX_sm;
+    const uint pin = RX_PIN;
+
     static inline void uart_rx_8n1_program_init(PIO pio, uint sm, uint offset, uint pin, uint baud) {
         pio_sm_set_pins_with_mask64(pio, sm, 1ull << pin, 1ull << pin); // initial high
         pio_sm_set_pindirs_with_mask64(pio, sm, 0ull << pin, 1ull << pin);
@@ -107,6 +120,9 @@ namespace RX {
 
 namespace TX {
     int offset;
+    const PIO pio = TX_pio;
+    const uint sm = TX_sm;
+    const uint pin = TX_PIN;
     /* ==== [WRITE] uart_tx_8n2_program START ==== */
     /**
      * IN pio: the PIO instance, pio0 or pio1
@@ -262,22 +278,12 @@ namespace TX {
     }
 }
 
-namespace POWER_OUT {
-    static void po_gpio_init() {
-        gpio_init(POWER_CTL_PIN);
-        gpio_set_dir(POWER_CTL_PIN, GPIO_OUT);
-    }
-    static void on() {
-        gpio_put(POWER_CTL_PIN, 1); // HIGH
-    }
-    static void off() {
-        gpio_put(POWER_CTL_PIN, 0);
-    }
-}
-
-
 namespace RST {
     int offset;
+    const PIO pio = RST_pio;
+    const uint sm = RST_sm;
+    const uint pin = RST_PIN;
+
     // If initial RST logic handled in .pio, RST default LOW, wait IRQ, then flip HIGH/LOW
     // Otherwise (which is better), RST default HIGH, wait IRQ, then flip HIGH/LOW
     static void rst_init(PIO pio, uint sm, uint offset, uint pin, float baud) {
@@ -317,6 +323,30 @@ namespace RST {
 namespace TESTRUN {
 }
 
+namespace POWER_OUT {
+    static void po_gpio_init() {
+        gpio_init(POWER_CTL_PIN);
+        gpio_set_dir(POWER_CTL_PIN, GPIO_OUT);
+    }
+    static void on() {
+        gpio_put(POWER_CTL_PIN, 1); // HIGH
+    }
+    static void off() {
+        gpio_put(POWER_CTL_PIN, 0);
+    }
+    static void gpio_put_all_low() {
+        gpio_init(TX::pin); // ? without the init, put not work in reset, hw bug ...? Anyway,
+        gpio_init(RST::pin);
+        gpio_init(RX::pin);
+        gpio_set_dir(TX::pin, GPIO_OUT);
+        gpio_set_dir(RST::pin, GPIO_OUT);
+        gpio_set_dir(RX::pin, GPIO_IN);
+        gpio_put(TX::pin, 0);
+        gpio_put(RST::pin, 0);
+    }
+}
+
+
 
 static void gpio_init_TXRST(){
     gpio_init(TX_PIN);
@@ -330,7 +360,7 @@ static void gpio_send_initial_state() {
     sleep_ms(40);         // assume a initial state, nothing before this
 }
 // TX LOW 20ms, on 10ms RST HIGH
-static void gpio_send_reset() {
+static void send_reset_via_gpio() {
     gpio_put(TX_PIN, 0);
     sleep_ms(10);
     gpio_put(RST_PIN, 1);
@@ -369,6 +399,10 @@ void task_tx0() {
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 17.153012690, 30, 30); // 2 bytes before unlock
 }
 
+void task_tx_remaining() {
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.21, 99, 30, 30);
+}
+
 /**
  * If RX on core1 (since TX logic is more complex)
  * - RX wait until IRQ 5
@@ -404,6 +438,34 @@ void task_rx() {
     }
 }
 
+// static void system_cleanup_and_reboot() {
+//     POWER_OUT::off();
+//     rom_reboot(BOOT_TYPE_NORMAL, 3, NULL, NULL); // rp2350 only // reboot after 3ms using watchdog
+// }
+
+/**
+ * We need persistance memory to change the offset
+ * - either use external memory
+ * - or only reboot the 3v3 (chip)
+ * - reset pico to initial state but keep memory
+ * - reset core1
+ */
+static void partial_reset(int delay_ms) {
+    POWER_OUT::off(); // 3v3 powerer device must full reboot
+    // there are better ways, but just reverse everything, it should work fine
+    TX::off();
+    RX::off();
+    RST::off();
+    pio_remove_program_and_unclaim_sm(&uart_tx_8n2_program, TX::pio, TX::sm, TX::offset);
+    pio_remove_program_and_unclaim_sm(&uart_rx_8n1_program, RX::pio, RX::sm, RX::offset);
+    pio_remove_program_and_unclaim_sm(&rst_program, RST::pio, RST::sm, RST::offset);
+    POWER_OUT::gpio_put_all_low();
+    // gpio_send_initial_state();
+    multicore_reset_core1();
+    sleep_ms(delay_ms);
+    warp7(); // longjmp to main
+}
+
 static void run_multicore() {
     multicore_launch_core1(task_rx);
     task_tx0(); // until 1 bytes before
@@ -416,14 +478,17 @@ static void run_multicore() {
     int x = multicore_fifo_pop_blocking(); // Check the next bytes
     printf("X:%x ", x);
     if ((x - 0xF2) == 0) { // 0xF2 unlock_ok?
-        // TODO task_remaining();
+        task_tx_remaining();
+#if DEBUG_MODE == 1
+        partial_reset(7000);
+#endif
         while (true) {
             tight_loop_contents();
         }
         return;
     } else {
-        // POWER_OUT::off();
-        // rom_reboot(BOOT_TYPE_NORMAL, 3, NULL, NULL); // rp2350 only // reboot after 3ms using watchdog
+        partial_reset(30);
+        // system_cleanup_and_reboot();
         return;
     }
 }
@@ -433,8 +498,7 @@ static void hw_init() {
     gpio_init_TXRST();
     gpio_send_initial_state();
     POWER_OUT::on();
-    sleep_ms(5000);
-    gpio_send_reset(); // this has to be done before pio init because the initial reset logic is implented with gpio
+    send_reset_via_gpio(); // this has to be done before pio init because the initial reset logic is implented with gpio
 
     // Load program; return instruction memory offset the program is loaded at, or -1 for error
     TX::offset = pio_add_program(TX_pio, &uart_tx_8n2_program);
@@ -457,8 +521,11 @@ static void run() {
 }
 
 int main() {
+    if (setjmp(dst) == 0) {         // First call: 0, after a longjmp: 1
+        stdio_init_all();           // USB COM printf init
+    }
+
 #if DEBUG_MODE == 1
-    stdio_init_all();               // USB COM printf init
     sleep_ms(200);                  // a delay for USB COM to reconnect
 #endif
     hw_init();
