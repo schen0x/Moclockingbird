@@ -52,6 +52,11 @@ stopbit_check_ok:                  ; No delay before returning to start; a littl
     push iffull noblock            ; do nothing until ISR reach thresh; no block even when RX FIFO is full; noblock means use a logic analyser to capture the response
     ; push iffull block              ; to receive all
     ; push block                     ; debug
+    jmp start
+
+hold:
+    wait IRQ 5
+    jmp start
 .wrap
 
 

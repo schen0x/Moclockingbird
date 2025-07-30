@@ -15,17 +15,16 @@
 const float UART_BAUD = 115200;
 const PIO TX_pio = pio1; // pio0 or pio1
 const uint TX_sm  = 0; // sm could be 0..3
-const PIO RX_pio = pio0; // use different pio with TX to use PIO_FIFO_JOIN_RX
-const uint RX_sm  = 1;
+const PIO RX_pio = pio0;
+const uint RX_sm  = 1;          // use different pin & sm with TX, to use PIO_FIFO_JOIN_RX
 const uint TX_PIN = 0;          // GP0
-const uint RX_PIN = 16;         // GP16 to avoid line interferance with RST
+const uint RX_PIN = 16;         // GP16 to avoid interferance with RST
 const PIO RST_pio = pio1;
 const uint RST_sm  = 2;
 const uint RST_PIN = 2;         // GP2
 
 namespace RX {
     int offset;
-    /* ==== [READ] uart_rx_8n1_program START ==== */
     static inline void uart_rx_8n1_program_init(PIO pio, uint sm, uint offset, uint pin, uint baud) {
         pio_sm_set_pins_with_mask64(pio, sm, 1ull << pin, 1ull << pin); // initial high
         pio_sm_set_pindirs_with_mask64(pio, sm, 0ull << pin, 1ull << pin);
@@ -61,7 +60,7 @@ namespace RX {
     // after sm1 start, it wait for a LOW and push 8 bits automatically to FIFO
     // No data: if a certain time pass, but FIFO is empty
     // give back control to TX if No data
-    static inline int uart_rx_program_getc(PIO pio, uint sm) {
+    static inline int rx_getc(PIO pio, uint sm) {
         while (pio_sm_is_rx_fifo_empty(pio, sm))
             return -1;
         // should exists something, otherwise it's error
@@ -81,13 +80,24 @@ namespace RX {
     static inline int read_all() {
         int x = 0;
         int consumed_message_byte_count = 0;
-        while ((x = uart_rx_program_getc(RX_pio, RX_sm)) > 0)
+        while ((x = rx_getc(RX_pio, RX_sm)) > 0)
         {
             printf("B:%x", x);
+            consumed_message_byte_count++;
         }
         return consumed_message_byte_count;
     }
-    /* ==== uart_rx_8n1_program END ==== */
+    /* Hold/pause RX, wait irq 5 to resume (set manually) */
+    static void hold() {
+        uint hold_irq_set = pio_encode_jmp(RX::offset + 9);
+        pio_sm_exec_wait_blocking(RX_pio, RX_sm, hold_irq_set);
+    }
+
+    /* Set IRQ 5 */
+    static void resume() {
+        uint tx_irq_set = pio_encode_irq_set(false, 5);
+        pio_sm_exec_wait_blocking(TX_pio, TX_sm, tx_irq_set);
+    }
 }
 
 
@@ -116,7 +126,10 @@ namespace TX {
         sm_config_set_set_pins(&c, pin, 1);
         sm_config_set_out_pins(&c, pin, 1);
         // TX FIFO length=4 (4x32bits) is used for transmit, RX FIFO length=4 is used for receive.
-        sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);
+        /* Each state machine has two FIFOs connecting to the system bus
+         * Each FIFO is 4 * 32 bits
+        */
+        sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
         // sm_config_set_out_shift(&c, true, true, 8); // (c, shift_right=true, autopull=true, 8 bits a time) // FIFO (4x32bits) -> OSR (32 bits)
         sm_config_set_out_shift(&c, true, false, 8); // (c, shift_right=true, autopull=false, 8 bits a time) // FIFO (4x32bits) -> OSR (32 bits)
         sm_config_set_sideset_pins(&c, pin);
@@ -345,13 +358,50 @@ void task_tx() {
       // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.213, 29.246, 3, 100);
 }
 
-static void run_multicore() {
-    // core 1 TX
-    multicore_launch_core1(task_tx);
-    // core 0 RX
+/* If RX on core1 (since TX logic is more complex?) */
+void task_rx() {
+    RX::hold(); // do nothing initially, wait IRQ from main task
+    // Wait for the first 3 bytes
+    int byte_count = 0;
+    while (byte_count < 3)
+    {
+        int x = 0;
+        while ((x = RX::rx_getc(RX_pio, RX_sm)) > 0)
+        {
+            /**
+             * FIFOs across cores:
+             * RP2040: 32bits * 8 * 2 FIFOs (TX, RX)
+             * RP2350: 32bits * 4 * 2 FIFOs (TX, RX)
+             * 
+             * One of the FIFOs can only be written by core 0, and read by core 1.
+             * The other can only be written by core 1, and read by core 0.
+             */
+            multicore_fifo_push_blocking(x);
+            printf("B:%x", x);
+            byte_count++;
+        }
+    }
+    RX::hold(); // pause and wait the main core, continue receiving if success
     while (true){
-        RX::read_all();
-        // tight_loop_contents();
+        RX::read_all(); // monitor the FIFO
+    }
+}
+
+static void run_multicore() {
+    // // core 1 TX
+    // multicore_launch_core1(task_tx); // 2 bytes before the glitch
+    // RX::resume(); // start RX via IRQ (before sending the 2 last byte)
+    // multicore_launch_core1(task_tx); // send before glitch
+    // // core 0 RX, RX on the main core to better incorporate the glitch logic
+    multicore_launch_core1(task_rx);
+    task_tx(); // TODO 2 bytes before
+    // TODO peck
+    RX::resume();
+    multicore_fifo_pop_blocking(); // Block until there is data ready to be read
+    multicore_fifo_pop_blocking(); // Both the 1st and 2nd byte are sent by TX
+    int x = multicore_fifo_pop_blocking(); // Check the 3rd bytes
+    if ((x - 0xF2) == 0) { // 0xF2 unlock_ok?
+        // TODO task_remaining();
     }
 }
 static void init() {
