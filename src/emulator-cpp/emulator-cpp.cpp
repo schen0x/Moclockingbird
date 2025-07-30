@@ -22,7 +22,7 @@ inline void warp7() {
 }
 
 
-#define DEBUG_MODE 1
+#define DEBUG_MODE 0
 
 const float UART_BAUD = 115200;
 const PIO TX_pio = pio1; // pio0 or pio1
@@ -34,7 +34,8 @@ const uint RX_PIN = 16;         // GP16 to avoid interferance with RST
 const PIO RST_pio = pio1;
 const uint RST_sm  = 2;
 const uint RST_PIN = 2;         // GP2
-const uint POWER_CTL_PIN = 15;   // GP15
+const uint POWER_CTL_PIN = 15;  // GP15
+const uint GLITCH_CTL_PIN = 9;  // GP9
 
 namespace RX {
     int offset;
@@ -323,26 +324,112 @@ namespace RST {
 namespace TESTRUN {
 }
 
+
+namespace GLITCH_CTL {
+    const static int pin = GLITCH_CTL_PIN;
+    // account for the last byte's time
+    // 10 (1+8N1) bytes * 1 / 115200 == 86.805555 us
+    // response is 119.44 us after the starting LOW, delta 32.63
+    const static int delay_base_us = 75; // delay in microseconds
+    const static int delay_inc_us = 1;     // + n per loop
+    const static int delay_max_us = 108;
+    static int ct = 0;
+    // depends on the component's speed
+    const static int hold_us = 3;  // time to hold during the glitch // 1 / 125M == 8 ns, 1 / 1M == 1us, 1 / 20M == 50 ns
+    void glitch_ctl_pio_init(PIO pio, uint sm, uint offset, uint pin, uint clk_divider) {
+        pio_sm_config c = uart_tx_8n2_program_get_default_config(offset);
+        // Tell PIO to initially drive output-high on the selected pin, then map PIO
+        // onto that pin with the IO muxes.
+        pio_sm_set_pins_with_mask64(pio, sm, 1ull << pin, 1ull << pin);
+        pio_sm_set_pindirs_with_mask64(pio, sm, 1ull << pin, 1ull << pin);
+        // "pin" init -- GPIO control: PIO module takes control
+        pio_gpio_init(pio, pin);
+        // set the direction of "pin" of pio in sm to output during the init
+        // because we are the debugger and we write first
+        pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true); // start from out
+        sm_config_set_set_pins(&c, pin, 1);
+        // sm_config_set_out_pins(&c, pin, 1);
+        // TX FIFO length=4 (4x32bits) is used for transmit, RX FIFO length=4 is used for receive.
+        /* Each state machine has two FIFOs connecting to the system bus
+         * Each FIFO is 4 * 32 bits
+        */
+        sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+        sm_config_set_out_shift(&c, true, false, 8); // (c, shift_right=true, autopull=false, 8 bits a time) // FIFO (4x32bits) -> OSR (32 bits)
+        sm_config_set_sideset_pins(&c, pin);
+        uint32_t sys_hz = clock_get_hz(clk_sys); // usually 125MHz
+        /**
+         * The clock divider slows the state machine’s execution by masking the system
+         * clock on some cycles, in a repeating pattern, so that the state machine does
+         * not advance. Effectively this produces a slower clock for the state machine
+         * to run from, which can be used to generate e.g. a particular UART baud rate.
+         * 
+         * An integer clock divisor of n will cause the state machine to run 1 cycle in every n.
+         * may jitter if div too small (when baud too high) and is float
+        */
+        sm_config_set_clkdiv(&c, sys_hz / clk_divider); // because we send 1 bit each 8 cycle
+        // State_machine, load our configuration, and jump to the start of the program
+        pio_sm_init(pio, sm, offset, &c);
+        // State_machine, start
+        // pio_sm_set_enabled(pio, sm, true);
+    }
+    void po_gpio_init() {
+        gpio_init(pin);
+        gpio_set_dir(pin, GPIO_OUT);
+    }
+    /* will short the SHUNT */
+    void on() {
+        gpio_put(pin, 1);
+    }
+    /* normal state */
+    void off() {
+        gpio_put(pin, 0);
+    }
+    /**
+     * - do glitch
+     * - increse vars
+     */
+    void VERY_VERY_ANGRY() {
+        int delay = delay_base_us + delay_inc_us * ct;
+        if (delay >= delay_max_us) {
+            ct = 0;
+            delay = delay_base_us + delay_inc_us * ct;
+        }
+        sleep_us(delay);
+        on();
+        sleep_us(hold_us);
+        off();
+        ct++;
+#if DEBUG_MODE == 1
+        printf("ct:%d ", ct);
+#endif
+    }
+}
+
+
 namespace POWER_OUT {
+    static int pin = POWER_CTL_PIN;
     static void po_gpio_init() {
-        gpio_init(POWER_CTL_PIN);
-        gpio_set_dir(POWER_CTL_PIN, GPIO_OUT);
+        gpio_init(pin);
+        gpio_set_dir(pin, GPIO_OUT);
     }
     static void on() {
-        gpio_put(POWER_CTL_PIN, 1); // HIGH
+        gpio_put(pin, 1); // HIGH
     }
     static void off() {
-        gpio_put(POWER_CTL_PIN, 0);
+        gpio_put(pin, 0);
     }
     static void gpio_put_all_low() {
         gpio_init(TX::pin); // ? without the init, put not work in reset, hw bug ...? Anyway,
         gpio_init(RST::pin);
-        gpio_init(RX::pin);
+        // gpio_init(RX::pin);
+        gpio_init(GLITCH_CTL::pin);
         gpio_set_dir(TX::pin, GPIO_OUT);
         gpio_set_dir(RST::pin, GPIO_OUT);
-        gpio_set_dir(RX::pin, GPIO_IN);
+        // gpio_set_dir(RX::pin, GPIO_IN);
+        gpio_set_dir(GLITCH_CTL::pin, GPIO_OUT);
         gpio_put(TX::pin, 0);
         gpio_put(RST::pin, 0);
+        gpio_put(GLITCH_CTL::pin, 0);
     }
 }
 
@@ -351,13 +438,16 @@ namespace POWER_OUT {
 static void gpio_init_TXRST(){
     gpio_init(TX_PIN);
     gpio_init(RST_PIN);
+    gpio_init(GLITCH_CTL::pin);
 }
 static void gpio_send_initial_state() {
     gpio_set_dir(TX_PIN, GPIO_OUT);
     gpio_set_dir(RST_PIN, GPIO_OUT);
+    gpio_set_dir(GLITCH_CTL::pin, GPIO_OUT);
     gpio_put(TX_PIN, 1);  // TX HIGH
     gpio_put(RST_PIN, 0); // RST LOW
-    sleep_ms(40);         // assume a initial state, nothing before this
+    gpio_put(GLITCH_CTL::pin, 0);
+    sleep_ms(20);         // assume a initial state, nothing before this
 }
 // TX LOW 20ms, on 10ms RST HIGH
 static void send_reset_via_gpio() {
@@ -396,7 +486,7 @@ void task_tx0() {
 
       // ok1 TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 17.1532431, 30, 30); // unlock (0xF2) ok
       // ok1 TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.21, 99, 30, 30); // ok
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 17.153012690, 30, 30); // 2 bytes before unlock
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 17.153012690, 5, 10); // 2 bytes before unlock
 }
 
 void task_tx_remaining() {
@@ -428,7 +518,9 @@ void task_rx() {
              * The other can only be written by core 1, and read by core 0.
              */
             multicore_fifo_push_blocking(x);
+#if DEBUG_MODE == 1
             printf("B:%x", x);
+#endif
             byte_count++;
         }
     }
@@ -437,11 +529,6 @@ void task_rx() {
         RX::read_all(); // monitor the FIFO
     }
 }
-
-// static void system_cleanup_and_reboot() {
-//     POWER_OUT::off();
-//     rom_reboot(BOOT_TYPE_NORMAL, 3, NULL, NULL); // rp2350 only // reboot after 3ms using watchdog
-// }
 
 /**
  * We need persistance memory to change the offset
@@ -470,17 +557,30 @@ static void run_multicore() {
     multicore_launch_core1(task_rx);
     task_tx0(); // until 1 bytes before
     RX::resume();
+    while (!pio_sm_is_tx_fifo_empty(TX::pio, TX::sm)) { // Make sure all before has been sent
+        tight_loop_contents();
+    }
     uint8_t theLastByte = 0xff;
     pio_sm_put_blocking(TX_pio, TX_sm, theLastByte); // consider queuing a few bytes to add more wiggle room
-    // TODO peck with delay
-    int y = multicore_fifo_pop_blocking(); // Both the 1st byte were sent by TX, RX is core1 so we can receive it despite the pecking
-    printf("Y:%x ", y);
-    int x = multicore_fifo_pop_blocking(); // Check the next bytes
-    printf("X:%x ", x);
-    if ((x - 0xF2) == 0) { // 0xF2 unlock_ok?
-        task_tx_remaining();
+    GLITCH_CTL::VERY_VERY_ANGRY();
+    uint32_t y;
+    // wait 100ms otherwise probably a crash
+    if (!multicore_fifo_pop_timeout_us(100, &y)) { // Both the 1st byte were sent by TX, RX is core1 so we can receive it despite the pecking
+        printf("crash@ct%d ", GLITCH_CTL::ct); // actually ct+1
+    }
+    uint32_t x;
+    multicore_fifo_pop_timeout_us(5, &x); // Check the next bytes
 #if DEBUG_MODE == 1
-        partial_reset(7000);
+    printf("Y:%x ", y);
+    printf("X:%x ", x);
+#endif
+    if (((int)(x & 0xff) - 0xF2) == 0) { // 0xF2 unlock_ok?
+        printf("\n OK@ct%d ", GLITCH_CTL::ct); // actually ct+1
+        RX::resume();
+        task_tx_remaining();
+        printf("\n END");
+#if DEBUG_MODE == 1
+        // partial_reset(7000);
 #endif
         while (true) {
             tight_loop_contents();
@@ -526,7 +626,7 @@ int main() {
     }
 
 #if DEBUG_MODE == 1
-    sleep_ms(200);                  // a delay for USB COM to reconnect
+    // sleep_ms(200);                  // a delay for USB COM to reconnect
 #endif
     hw_init();
     run();
