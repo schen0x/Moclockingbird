@@ -25,7 +25,7 @@ const uint RX_PIN = 16;         // GP16 to avoid interferance with RST
 const PIO RST_pio = pio1;
 const uint RST_sm  = 2;
 const uint RST_PIN = 2;         // GP2
-const uint POWER_CTL_PIN = 21;   // GP21
+const uint POWER_CTL_PIN = 15;   // GP15
 
 namespace RX {
     int offset;
@@ -368,9 +368,6 @@ void task_tx0() {
       // ok1 TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 29.21, 99, 30, 30); // ok
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.1, 17.153012690, 30, 30); // 2 bytes before unlock
 }
-// void task_tx1() {
-//     TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 17.153012692, 17.153012693, 30, 30); // 2 bytes before unlock
-// }
 
 /**
  * If RX on core1 (since TX logic is more complex)
@@ -432,10 +429,11 @@ static void run_multicore() {
 }
 static void hw_init() {
     POWER_OUT::po_gpio_init();
-    POWER_OUT::on();
 
     gpio_init_TXRST();
     gpio_send_initial_state();
+    POWER_OUT::on();
+    sleep_ms(5000);
     gpio_send_reset(); // this has to be done before pio init because the initial reset logic is implented with gpio
 
     // Load program; return instruction memory offset the program is loaded at, or -1 for error
