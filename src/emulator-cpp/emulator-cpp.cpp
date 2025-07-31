@@ -133,6 +133,7 @@ namespace TX {
     const PIO pio = TX_pio;
     const uint sm = TX_sm;
     const uint pin = TX_PIN;
+    int ct = 0;
     /* ==== [WRITE] uart_tx_8n2_program START ==== */
     /**
      * IN pio: the PIO instance, pio0 or pio1
@@ -281,7 +282,10 @@ namespace TX {
             prevDir = d.dir;
             // RX::read_all();
             // sleep_ms(1);
-            
+            while (multicore_fifo_rvalid()) {
+                multicore_fifo_pop_blocking();
+                TX::ct++;
+            }
         }
         // sleep_ms(500); // after a section
         sleep_ms(delayMsSection);
@@ -343,10 +347,13 @@ namespace GLITCH_CTL {
     // const int offset_base = 2565; // delay in clk
     // const int offset_max = 3531;  // 113 us
     // const int offset_base_inc = 100;     // + n per loop
-    const int offset_base = 10300; // delay in clk
-    const int offset_base_inc = 100;     // + n per loop
-    const int offset_max = 13800;  // 113 us
-    static int offset_ct = 0;
+    // const int offset_base = 10300; // delay in clk
+    const int offset_base = 13000; // delay in clk
+    const int offset_base_inc = 20;     // + n per loop
+    // const int offset_max = 13500;  // 113 us
+    const int offset_max = 13350;  // 113 us
+    static int offset_ct_base = 0;
+    static int offset_ct = offset_ct_base;
 
     // really depends on the component
     const int width_base = 1;  // time to hold during the glitch // 1 / 125M == 8 ns, 1 / 1M == 1us, 1 / 20M == 50 ns
@@ -400,7 +407,7 @@ namespace GLITCH_CTL {
         int thisDelay = offset_base + offset_base_inc * offset_ct;
         int thisWidth = width_base + width_inc * width_inc_ct;
         if (thisDelay >= offset_max) {
-            offset_ct = 0;
+            offset_ct = offset_ct_base;
             thisDelay = offset_base + offset_base_inc * offset_ct;
 
             width_inc_ct++;
@@ -478,18 +485,18 @@ static void send_reset_via_gpio() {
 static void gpio_send_eon() {
     TX::holdHigh();
     RST::flip();
-    sleep_ms(20);
+    sleep_ms(5);
     TX::holdLow();
-    sleep_ms(100);
+    sleep_ms(5);
     RST::flip();
-    sleep_ms(20);
+    sleep_ms(5);
     TX::holdHigh();
-    sleep_ms(20);
+    sleep_ms(5);
     TX::resume();
 }
 static void set_baud() {
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.6570, 16.6574, 1, 1);// 0x3a, single line
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.6574, 16.6584, 1, 20); // set baud, ACK
+      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.6574, 16.6584, 1, 5); // set baud, ACK
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.6870, 16.6886, 1, 3); // reset, ACK
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.689, 16.693, 1, 7); // Silicon Signature
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.693, 16.697, 1, 3); // Block Blank Check 0-0x0003ffff,Not Blank
@@ -542,7 +549,13 @@ void task_rx() {
     }
     RX::hold(); // pause and wait the main core, continue receiving if success
     while (true){
-        RX::read_all(); // monitor the FIFO
+        x = -1;
+        x = RX::rx_getc(RX_pio, RX_sm);
+        if (x >= 0) {
+            printf("B:%x", x);
+            multicore_fifo_push_blocking(x);
+        }
+        // RX::read_all(); // monitor the FIFO
     }
 }
 
@@ -554,7 +567,8 @@ void task_rx() {
  * - reset core1
  */
 static void partial_reset(int delay_ms) {
-    sleep_ms(delay_ms);
+    TX::ct = 0;
+    sleep_ms(int(delay_ms)/2);
     POWER_OUT::off(); // 3v3 powerer device must full reboot
     // there are better ways, but just reverse everything, it should work fine
     TX::off();
@@ -568,7 +582,7 @@ static void partial_reset(int delay_ms) {
     POWER_OUT::gpio_put_all_low();
     // gpio_send_initial_state();
     multicore_reset_core1();
-    sleep_ms(int(delay_ms/5));
+    sleep_ms(int(delay_ms/2));
     warp7(); // longjmp to main
 }
 
@@ -590,19 +604,28 @@ static void run_multicore() {
     uint32_t x;
     if (!multicore_fifo_pop_timeout_us(100, &x)){ // Check the next bytes
         printf("crash2@%d,%d;", GLITCH_CTL::offset_ct, GLITCH_CTL::width_inc_ct); // actually ct+1
-        partial_reset(500);
+        partial_reset(40);
         return;
     }
     // x retrived
     if (((int)(x & 0xff) - 0xF2) != 0) { // 0xF2 unlock not ok
-        partial_reset(500);
+        partial_reset(40);
         return;
     } 
-    // success
+    // maybe success, send the cmds
     printf("\n OK@ct%d ", GLITCH_CTL::offset_ct); // actually ct+1
+    TX::ct = 0;
     RX::resume();
     task_tx_remaining();
+    printf("TX::ct==%d;", TX::ct); // actually ct+1
     printf("\n END");
+    // if positive (~3472 bytes are sent by us)
+    if (TX::ct < 4000) { // 3472
+        printf("false_positive,TX::ct==%d;", TX::ct); // actually ct+1
+        partial_reset(40);
+        return;
+    }
+
     while (true) {
         tight_loop_contents();
     }
