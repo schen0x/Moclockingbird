@@ -348,11 +348,12 @@ namespace GLITCH_CTL {
     // const int offset_max = 3531;  // 113 us
     // const int offset_base_inc = 100;     // + n per loop
     // const int offset_base = 10300; // delay in clk
-    const int offset_base = 13000; // delay in clk
-    const int offset_base_inc = 20;     // + n per loop
+    // const int offset_base = 13000; // delay in clk
+    const int offset_base = 12500; // delay in clk
+    const int offset_base_inc = 35;     // + n per loop
     // const int offset_max = 13500;  // 113 us
     const int offset_max = 13350;  // 113 us
-    static int offset_ct_base = 0;
+    static int offset_ct_base = 10;
     static int offset_ct = offset_ct_base;
 
     // really depends on the component
@@ -470,16 +471,16 @@ static void gpio_send_initial_state() {
     gpio_put(TX_PIN, 1);  // TX HIGH
     gpio_put(RST_PIN, 0); // RST LOW
     gpio_put(GLITCH_CTL::pin, 0);
-    sleep_ms(20);         // assume a initial state, nothing before this
+    sleep_ms(3);         // assume a initial state, nothing before this
 }
 // TX LOW 20ms, on 10ms RST HIGH
 static void send_reset_via_gpio() {
     gpio_put(TX_PIN, 0);
-    sleep_ms(10);
-    gpio_put(RST_PIN, 1);
-    sleep_ms(10);
-    gpio_put(TX_PIN, 1); // TX HIGH
     sleep_ms(2);
+    gpio_put(RST_PIN, 1);
+    sleep_ms(2);
+    gpio_put(TX_PIN, 1); // TX HIGH
+    sleep_ms(1);
 }
 
 static void gpio_send_eon() {
@@ -499,7 +500,7 @@ static void set_baud() {
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.6574, 16.6584, 1, 5); // set baud, ACK
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.6870, 16.6886, 1, 3); // reset, ACK
       TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.689, 16.693, 1, 7); // Silicon Signature
-      TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.693, 16.697, 1, 3); // Block Blank Check 0-0x0003ffff,Not Blank
+      // TX::send_digests(TX_pio, TX_sm, digests, NUM_DIGESTS, UART_BAUD, 16.693, 16.697, 1, 3); // Block Blank Check 0-0x0003ffff,Not Blank
 }
 void task_tx0() {
       set_baud();
@@ -566,9 +567,9 @@ void task_rx() {
  * - reset pico to initial state but keep memory
  * - reset core1
  */
-static void partial_reset(int delay_ms) {
+static void partial_reset(int delay_ms_before, int delay_ms_after) {
     TX::ct = 0;
-    sleep_ms(int(delay_ms)/2);
+    sleep_ms(delay_ms_before);
     POWER_OUT::off(); // 3v3 powerer device must full reboot
     // there are better ways, but just reverse everything, it should work fine
     TX::off();
@@ -582,7 +583,7 @@ static void partial_reset(int delay_ms) {
     POWER_OUT::gpio_put_all_low();
     // gpio_send_initial_state();
     multicore_reset_core1();
-    sleep_ms(int(delay_ms/2));
+    sleep_ms(delay_ms_after);
     warp7(); // longjmp to main
 }
 
@@ -604,12 +605,12 @@ static void run_multicore() {
     uint32_t x;
     if (!multicore_fifo_pop_timeout_us(100, &x)){ // Check the next bytes
         printf("crash2@%d,%d;", GLITCH_CTL::offset_ct, GLITCH_CTL::width_inc_ct); // actually ct+1
-        partial_reset(40);
+        partial_reset(7,3);
         return;
     }
     // x retrived
     if (((int)(x & 0xff) - 0xF2) != 0) { // 0xF2 unlock not ok
-        partial_reset(40);
+        partial_reset(7,3);
         return;
     } 
     // maybe success, send the cmds
@@ -622,7 +623,7 @@ static void run_multicore() {
     // if positive (~3472 bytes are sent by us)
     if (TX::ct < 4000) { // 3472
         printf("false_positive,TX::ct==%d;", TX::ct); // actually ct+1
-        partial_reset(40);
+        partial_reset(7,3);
         return;
     }
 
